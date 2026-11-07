@@ -51,6 +51,8 @@ the calendar header, which sidesteps the timezone problem described above.
 
 ## 2. Configure
 
+**Windows (PowerShell):**
+
 ```powershell
 cd C:\Users\Administrator\forex-discord-bot
 copy .env.example .env
@@ -61,6 +63,15 @@ notepad .env
 > `C:\Users\Administrator\AppData\Local\Programs\Python\Python312\python.exe`.
 > Open a new terminal after installation if `python` is not on PATH yet.
 
+**Linux / macOS:**
+
+```bash
+git clone https://github.com/jobmwitah/forex-discord-bot.git
+cd forex-discord-bot
+cp .env.example .env
+nano .env        # or: vim .env
+```
+
 Set at least:
 
 ```env
@@ -70,10 +81,12 @@ GUILD_ID=your-server-id        # optional, makes /commands appear instantly
 
 ## 3. Install and run
 
+### Windows
+
 ```powershell
 # one-time setup (already done on this machine)
 python -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\python -m pip install -r requirements.txt
 
 # start the bot
 .venv\Scripts\python bot.py
@@ -81,9 +94,38 @@ python -m venv .venv
 
 Or double-click `run.bat`.
 
+### Linux / macOS
+
+```bash
+# Debian/Ubuntu only: install Python and venv support if missing
+sudo apt update
+sudo apt install -y python3 python3-venv python3-pip
+
+# one-time setup
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# start the bot
+python bot.py
+```
+
+Or without activating the virtual environment:
+
+```bash
+.venv/bin/python bot.py
+```
+
 ### Test the data feed without a token
 
+```bash
+# Linux / macOS
+.venv/bin/python bot.py --preview --hours 72 --impact high
+.venv/bin/python bot.py --preview --pair EURUSD --impact medium
+```
+
 ```powershell
+# Windows
 .venv\Scripts\python bot.py --preview --hours 72 --impact high
 .venv\Scripts\python bot.py --preview --pair EURUSD --impact medium
 ```
@@ -123,6 +165,46 @@ currency directly, use `currencies:USD,EUR` or `currencies:all`.
 - The daily digest is scheduled in the server's configured timezone, but the
   times inside the embed render in each member's own timezone.
 
+## Running the bot long-term on Linux
+
+Use a `systemd` service so the bot starts on boot and restarts after crashes.
+
+```bash
+sudo tee /etc/systemd/system/forex-bot.service > /dev/null <<'EOF'
+[Unit]
+Description=ForexFactory Discord alerts bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+WorkingDirectory=/home/YOUR_USER/forex-discord-bot
+ExecStart=/home/YOUR_USER/forex-discord-bot/.venv/bin/python bot.py
+Restart=on-failure
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now forex-bot
+sudo systemctl status forex-bot
+```
+
+Replace `YOUR_USER` with your Linux username and adjust the paths if you cloned
+the repo somewhere else. Useful commands:
+
+```bash
+journalctl -u forex-bot -f        # live logs
+sudo systemctl restart forex-bot  # after editing .env
+sudo systemctl stop forex-bot
+```
+
+On macOS, use `launchd` or run it inside `tmux`/`screen` instead.
+
 ## Configuration reference
 
 | Variable | Default | Description |
@@ -149,7 +231,7 @@ forex-discord-bot/
 ├── formatting.py        # Discord embeds and impact styling
 ├── requirements.txt
 ├── .env.example
-└── run.bat
+└── run.bat              # Windows launcher (Linux: use systemd, see above)
 ```
 
 ## Troubleshooting
