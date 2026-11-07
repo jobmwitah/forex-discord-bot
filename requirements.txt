@@ -1,0 +1,7 @@
+discord.py>=2.4,<3
+requests>=2.31
+python-dotenv>=1.0
+tzdata>=2024.1
+forex-pytory==0.1.0
+curl_cffi>=0.7
+beautifulsoup4>=4.12
