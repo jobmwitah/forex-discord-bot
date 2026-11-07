@@ -164,7 +164,9 @@ def group_embeds(
     return groups
 
 
-def alert_embed(event: Event, minutes_before: int) -> discord.Embed:
+def alert_embed(
+    event: Event, minutes_before: int, *, test: bool = False
+) -> discord.Embed:
     when_text = (
         "now"
         if minutes_before <= 0
@@ -181,7 +183,10 @@ def alert_embed(event: Event, minutes_before: int) -> discord.Embed:
     )
     embed.add_field(name="Forecast", value=f"`{_value_or_dash(event.forecast)}`", inline=True)
     embed.add_field(name="Previous", value=f"`{_value_or_dash(event.previous)}`", inline=True)
-    embed.set_footer(text="ForexFactory economic calendar alert")
+    embed.set_footer(
+        text="ForexFactory economic calendar alert"
+        + (" · TEST" if test else "")
+    )
     return embed
 
 

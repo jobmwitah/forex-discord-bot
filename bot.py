@@ -667,10 +667,13 @@ async def test_command(
     interaction: discord.Interaction,
     kind: Optional[app_commands.Choice[str]] = None,
 ) -> None:
+    # Discord invalidates interaction tokens after 3 seconds; acknowledge first.
+    await interaction.response.defer(ephemeral=True, thinking=True)
+
     settings = store.get(interaction.guild_id)
     channel = await bot.channel_for(interaction.guild, settings)
     if channel is None:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "No alert channel configured. Use "
             "`/setup channel:#your-channel` first.",
             ephemeral=True,
@@ -680,53 +683,32 @@ async def test_command(
     selected = kind.value if kind else "all"
     now = discord.utils.utcnow()
 
-    try:
-        events = await service.events_for_range(
-            now.date(), (now + timedelta(days=7)).date()
-        )
-    except Exception:
-        log.exception("Could not load calendar for /test")
-        events = []
-
-    upcoming = filter_events(
-        [event for event in events if event.when >= now],
-        settings.currencies,
-        settings.min_impact,
-    )
-
-    sample = (
-        upcoming[0]
-        if upcoming
-        else Event(
-            id="test",
-            title="Test Event",
-            currency="USD",
-            when=now + timedelta(minutes=15),
-            impact="high",
-            forecast="0.3%",
-            previous="0.2%",
-        )
+    # Deliberately synthetic: a test must not depend on the live calendar or on
+    # whichever real event happens to be next.
+    base = Event(
+        id="test-event",
+        title="Test: Non-Farm Employment Change",
+        currency="USD",
+        when=now + timedelta(minutes=15),
+        impact="high",
+        forecast="0.2%",
+        previous="0.1%",
     )
 
     embeds: list[discord.Embed] = []
 
     if selected in {"all", "reminder"}:
-        minutes = max(1, int((sample.when - now).total_seconds() // 60))
-        embeds.append(alert_embed(sample, minutes))
+        embeds.append(alert_embed(base, 15, test=True))
 
     if selected in {"all", "release"}:
-        release_sample = replace(sample, when=now)
-        embeds.append(release_alert_embed(release_sample, test=True))
+        embeds.append(
+            release_alert_embed(replace(base, when=now), test=True)
+        )
 
     if selected in {"all", "summary"}:
-        summary_sample = Event(
-            id="test-summary",
-            title="Test: Non-Farm Employment Change",
-            currency="USD",
+        summary_sample = replace(
+            base,
             when=now - timedelta(minutes=2),
-            impact="high",
-            forecast="0.2%",
-            previous="0.3%",
             actual="0.4%",
         )
         embeds.append(release_summary_embed(summary_sample, test=True))
@@ -742,7 +724,7 @@ async def test_command(
         "release": "release alert",
         "summary": "release summary",
     }
-    await interaction.response.send_message(
+    await interaction.followup.send(
         f"✅ Test message sent to {channel.mention} "
         f"({kind_labels[selected]}).",
         ephemeral=True,
@@ -762,9 +744,10 @@ async def on_app_command_error(
     elif isinstance(error, app_commands.CheckFailure):
         message = "This command can only be used inside a server."
     else:
+        command_name = getattr(interaction.command, "name", None)
         log.error(
-            "Command %s failed: %s",
-            interaction.command,
+            "Command /%s failed: %s",
+            command_name or interaction.command,
             original,
             exc_info=original,
         )
