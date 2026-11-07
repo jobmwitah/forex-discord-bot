@@ -176,7 +176,7 @@ currency directly, use `currencies:USD,EUR` or `currencies:all`.
 - **Release alerts** fire at `T-0`, within a 90-second window after the event
   time. Toggle them with `/setup release_alerts:false`.
 - **Release summaries** are sent `RELEASE_SUMMARY_DELAY_SECONDS` after the event
-  (2 minutes by default). The bot scrapes the event page for the actual value,
+  (30 seconds by default). The bot scrapes the event page for the actual value,
   compares it with the forecast, and labels the result as better/worse than
   expected. It retries for up to `RELEASE_SUMMARY_MAX_WAIT_SECONDS` (15 minutes)
   if the actual is not published yet, then skips that event. Toggle with
@@ -245,7 +245,7 @@ On macOS, use `launchd` or run it inside `tmux`/`screen` instead.
 | `DEFAULT_TIMEZONE` | `UTC` | IANA timezone used for digest scheduling. |
 | `DEFAULT_RELEASE_ALERTS` | `true` | Send an alert at the exact release time. |
 | `DEFAULT_RELEASE_SUMMARY` | `true` | Send a post-release actual-vs-forecast summary. |
-| `RELEASE_SUMMARY_DELAY_SECONDS` | `120` | Wait after release before fetching the actual value. |
+| `RELEASE_SUMMARY_DELAY_SECONDS` | `30` | Wait after release before fetching the actual value. |
 | `RELEASE_SUMMARY_MAX_WAIT_SECONDS` | `900` | Keep retrying for the actual value for this long. |
 | `FEED_TTL_SECONDS` | `600` | Calendar feed cache duration. |
 

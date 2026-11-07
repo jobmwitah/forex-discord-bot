@@ -85,7 +85,7 @@ def _env_int(name: str, default: int, minimum: int = 0) -> int:
 # keep retrying until MAX_WAIT has elapsed. The JSON feed has no actual values,
 # so the value is scraped from the HTML calendar on demand.
 RELEASE_SUMMARY_DELAY_SECONDS = _env_int(
-    "RELEASE_SUMMARY_DELAY_SECONDS", 120, 0
+    "RELEASE_SUMMARY_DELAY_SECONDS", 30, 0
 )
 RELEASE_SUMMARY_MAX_WAIT_SECONDS = _env_int(
     "RELEASE_SUMMARY_MAX_WAIT_SECONDS", 900, 60
