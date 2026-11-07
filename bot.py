@@ -10,6 +10,7 @@ import asyncio
 import logging
 import os
 import sys
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -44,6 +45,8 @@ from formatting import (
     display_currencies,
     display_impact,
     group_embeds,
+    release_alert_embed,
+    release_summary_embed,
 )
 
 load_dotenv()
@@ -68,6 +71,25 @@ try:
 except ValueError:
     FEED_TTL_SECONDS = 600
 GUILD_ID = os.getenv("GUILD_ID", "").strip()
+
+
+def _env_int(name: str, default: int, minimum: int = 0) -> int:
+    try:
+        return max(minimum, int(os.getenv(name, str(default))))
+    except ValueError:
+        log.warning("Invalid %s; using %d", name, default)
+        return default
+
+
+# Wait this long after the release before looking for the actual value, then
+# keep retrying until MAX_WAIT has elapsed. The JSON feed has no actual values,
+# so the value is scraped from the HTML calendar on demand.
+RELEASE_SUMMARY_DELAY_SECONDS = _env_int(
+    "RELEASE_SUMMARY_DELAY_SECONDS", 120, 0
+)
+RELEASE_SUMMARY_MAX_WAIT_SECONDS = _env_int(
+    "RELEASE_SUMMARY_MAX_WAIT_SECONDS", 900, 60
+)
 
 feed = CalendarFeed(ttl_seconds=FEED_TTL_SECONDS)
 service = CalendarService(feed)
@@ -118,6 +140,13 @@ def _command_filter(
     return None
 
 
+def _released_actual(value: str) -> str:
+    cleaned = (value or "").strip()
+    if cleaned.lower() in {"", "n/a", "na", "-", "—"}:
+        return ""
+    return cleaned
+
+
 def _settings_embed(guild: discord.Guild, settings) -> discord.Embed:
     channel_id = settings.alert_channel_id or _env_channel_id()
     channel = guild.get_channel_or_thread(channel_id) if channel_id else None
@@ -146,6 +175,16 @@ def _settings_embed(guild: discord.Guild, settings) -> discord.Embed:
     embed.add_field(name="Minimum impact", value=display_impact(settings.min_impact), inline=True)
     embed.add_field(name="Daily digest", value=digest, inline=True)
     embed.add_field(name="Pre-event reminders", value=reminders, inline=True)
+    embed.add_field(
+        name="Release alert (T-0)",
+        value="on" if settings.release_alerts else "off",
+        inline=True,
+    )
+    embed.add_field(
+        name="Release summary",
+        value="on" if settings.release_summary else "off",
+        inline=True,
+    )
     embed.set_footer(text="Change these with /setup — e.g. /setup digest:07:30 reminders:15,60")
     return embed
 
@@ -205,7 +244,7 @@ class ForexBot(commands.Bot):
                 await self._alert_tick()
             except Exception:
                 log.exception("Alert check failed")
-            await asyncio.sleep(30)
+            await asyncio.sleep(10)
 
     async def _alert_tick(self) -> None:
         now = discord.utils.utcnow()
@@ -256,6 +295,79 @@ class ForexBot(commands.Bot):
                                 log.exception(
                                     "Could not send reminder in guild %s", guild.id
                                 )
+
+            # Release-time alert (T-0).
+            if settings.release_alerts:
+                for event in matching:
+                    delta = (now - event.when).total_seconds()
+                    if not (0 <= delta <= 90):
+                        continue
+                    key = f"release:{guild.id}:{event.id}"
+                    if state.seen(key):
+                        continue
+                    try:
+                        await channel.send(embed=release_alert_embed(event))
+                        state.mark(key)
+                    except discord.HTTPException:
+                        log.exception(
+                            "Could not send release alert in guild %s", guild.id
+                        )
+
+            # Post-release summary with the actual value.
+            if settings.release_summary:
+                oldest = (
+                    RELEASE_SUMMARY_DELAY_SECONDS
+                    + RELEASE_SUMMARY_MAX_WAIT_SECONDS
+                )
+                for event in matching:
+                    key = f"summary:{guild.id}:{event.id}"
+                    if state.seen(key):
+                        continue
+
+                    elapsed = (now - event.when).total_seconds()
+                    if elapsed < RELEASE_SUMMARY_DELAY_SECONDS:
+                        continue
+                    if elapsed > oldest:
+                        # Too old to be useful after a restart; do not retry.
+                        state.mark(key)
+                        continue
+
+                    actual = _released_actual(event.actual)
+                    forecast = event.forecast
+                    previous = event.previous
+
+                    if not actual:
+                        try:
+                            details = await service.event_details(event)
+                        except Exception:
+                            log.exception(
+                                "Could not fetch actual for %s", event.title
+                            )
+                            details = None
+                        if details is not None:
+                            actual = _released_actual(details.actual)
+                            forecast = details.forecast or forecast
+                            previous = details.previous or previous
+
+                    if not actual:
+                        # Actual not published yet; retry on the next tick.
+                        continue
+
+                    summary_event = replace(
+                        event,
+                        actual=actual,
+                        forecast=forecast,
+                        previous=previous,
+                    )
+                    try:
+                        await channel.send(
+                            embed=release_summary_embed(summary_event)
+                        )
+                        state.mark(key)
+                    except discord.HTTPException:
+                        log.exception(
+                            "Could not send release summary in guild %s", guild.id
+                        )
 
             # Daily digest.
             if settings.digest_time:
@@ -480,6 +592,8 @@ async def settings_command(interaction: discord.Interaction) -> None:
     reminders="Comma-separated minutes before events, e.g. 15,60 — or 'off'",
     timezone="IANA timezone for digest scheduling, e.g. Europe/Istanbul",
     enabled="Turn alerts on or off",
+    release_alerts="Send an alert exactly when an event is released",
+    release_summary="Send a post-release summary comparing actual vs forecast",
 )
 @app_commands.choices(impact=IMPACT_CHOICES)
 @app_commands.checks.has_permissions(manage_guild=True)
@@ -493,6 +607,8 @@ async def setup_command(
     reminders: Optional[str] = None,
     timezone: Optional[str] = None,
     enabled: Optional[bool] = None,
+    release_alerts: Optional[bool] = None,
+    release_summary: Optional[bool] = None,
 ) -> None:
     changes: dict = {}
 
@@ -515,6 +631,10 @@ async def setup_command(
         changes["timezone"] = validate_timezone(timezone)
     if enabled is not None:
         changes["enabled"] = enabled
+    if release_alerts is not None:
+        changes["release_alerts"] = release_alerts
+    if release_summary is not None:
+        changes["release_summary"] = release_summary
 
     if not changes:
         await interaction.response.send_message(
@@ -531,9 +651,22 @@ async def setup_command(
     )
 
 
-@tree.command(name="test", description="Send a test alert to the configured channel")
+TEST_CHOICES = [
+    app_commands.Choice(name="All messages", value="all"),
+    app_commands.Choice(name="Pre-event reminder", value="reminder"),
+    app_commands.Choice(name="Release alert (T-0)", value="release"),
+    app_commands.Choice(name="Release summary", value="summary"),
+]
+
+
+@tree.command(name="test", description="Send test alerts to the configured channel")
+@app_commands.describe(kind="Which test message(s) to send")
+@app_commands.choices(kind=TEST_CHOICES)
 @app_commands.guild_only()
-async def test_command(interaction: discord.Interaction) -> None:
+async def test_command(
+    interaction: discord.Interaction,
+    kind: Optional[app_commands.Choice[str]] = None,
+) -> None:
     settings = store.get(interaction.guild_id)
     channel = await bot.channel_for(interaction.guild, settings)
     if channel is None:
@@ -544,21 +677,27 @@ async def test_command(interaction: discord.Interaction) -> None:
         )
         return
 
+    selected = kind.value if kind else "all"
     now = discord.utils.utcnow()
-    events = await service.events_for_range(
-        now.date(), (now + timedelta(days=7)).date()
-    )
+
+    try:
+        events = await service.events_for_range(
+            now.date(), (now + timedelta(days=7)).date()
+        )
+    except Exception:
+        log.exception("Could not load calendar for /test")
+        events = []
+
     upcoming = filter_events(
         [event for event in events if event.when >= now],
         settings.currencies,
         settings.min_impact,
     )
 
-    if upcoming:
-        event = upcoming[0]
-        minutes = max(1, int((event.when - now).total_seconds() // 60))
-    else:
-        event = Event(
+    sample = (
+        upcoming[0]
+        if upcoming
+        else Event(
             id="test",
             title="Test Event",
             currency="USD",
@@ -567,15 +706,46 @@ async def test_command(interaction: discord.Interaction) -> None:
             forecast="0.3%",
             previous="0.2%",
         )
-        minutes = 15
+    )
+
+    embeds: list[discord.Embed] = []
+
+    if selected in {"all", "reminder"}:
+        minutes = max(1, int((sample.when - now).total_seconds() // 60))
+        embeds.append(alert_embed(sample, minutes))
+
+    if selected in {"all", "release"}:
+        release_sample = replace(sample, when=now)
+        embeds.append(release_alert_embed(release_sample, test=True))
+
+    if selected in {"all", "summary"}:
+        summary_sample = Event(
+            id="test-summary",
+            title="Test: Non-Farm Employment Change",
+            currency="USD",
+            when=now - timedelta(minutes=2),
+            impact="high",
+            forecast="0.2%",
+            previous="0.3%",
+            actual="0.4%",
+        )
+        embeds.append(release_summary_embed(summary_sample, test=True))
 
     try:
-        await channel.send(embed=alert_embed(event, minutes))
+        await channel.send(embeds=embeds)
     except discord.HTTPException as exc:
         raise ValueError(f"Could not send to {channel.mention}: {exc}") from exc
 
+    kind_labels = {
+        "all": "reminder + release alert + release summary",
+        "reminder": "pre-event reminder",
+        "release": "release alert",
+        "summary": "release summary",
+    }
     await interaction.response.send_message(
-        f"✅ Test alert sent to {channel.mention}.", ephemeral=True
+        f"✅ Test message sent to {channel.mention} "
+        f"({kind_labels[selected]}).",
+        ephemeral=True,
     )
 
 

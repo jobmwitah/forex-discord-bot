@@ -7,6 +7,8 @@ project's data domain.
 It sends:
 
 - 🔔 **Pre-event reminders** (e.g. 60 and 15 minutes before high-impact events)
+- 🚨 A **release alert at T-0**, the moment the event is published
+- 📊 A **post-release summary** comparing the actual result with the forecast
 - 📅 A **daily digest** at a time you choose
 - 🔴🟠🟡 **On-demand slash commands** for any day or week, filtered by pair,
   currency, and impact
@@ -143,7 +145,11 @@ Or without activating the virtual environment:
 ```
 
 All options are optional; run `/setup` with no options (or `/settings`) to see
-the current configuration.
+the current configuration. Release alerts and release summaries are enabled by
+default.
+
+Preview the three message types with `/test` (all of them) or individually,
+e.g. `/test kind:release` or `/test kind:summary`.
 
 | Command | What it does |
 | --- | --- |
@@ -152,8 +158,8 @@ the current configuration.
 | `/week [pair] [currencies] [impact]` | The next seven days. |
 | `/pairs` | List supported majors/crosses and explain pair filtering. |
 | `/settings` | Show this server's alert configuration (ephemeral). |
-| `/setup ...` | Change channel, currencies, impact threshold, digest time, reminders, timezone, enabled. Requires **Manage Server**. |
-| `/test` | Send a test alert to the configured channel. |
+| `/setup ...` | Change channel, currencies, impact threshold, digest time, reminders, timezone, release alert/summary toggles, enabled. Requires **Manage Server**. |
+| `/test [kind]` | Send a test message to the configured channel. `kind` can be `all`, `reminder`, `release` or `summary`. |
 
 ### Pair filtering
 
@@ -163,11 +169,25 @@ currency directly, use `currencies:USD,EUR` or `currencies:all`.
 
 ### Alert behaviour
 
-- The bot checks the calendar every 30 seconds and refreshes the feed every
+- The bot checks the calendar every 10 seconds and refreshes the feed every
   10 minutes (`FEED_TTL_SECONDS`).
-- Reminders use the same currency/impact filter as the digest.
-- Sent alerts are recorded in `data/state.json`, so restarting the bot will not
-  repeat messages that were already delivered.
+- **Reminders** fire at the configured offsets before the event (`15,60` by
+  default).
+- **Release alerts** fire at `T-0`, within a 90-second window after the event
+  time. Toggle them with `/setup release_alerts:false`.
+- **Release summaries** are sent `RELEASE_SUMMARY_DELAY_SECONDS` after the event
+  (2 minutes by default). The bot scrapes the event page for the actual value,
+  compares it with the forecast, and labels the result as better/worse than
+  expected. It retries for up to `RELEASE_SUMMARY_MAX_WAIT_SECONDS` (15 minutes)
+  if the actual is not published yet, then skips that event. Toggle with
+  `/setup release_summary:false`.
+- The better/worse direction is a **heuristic**: for indicators such as
+  unemployment or jobless claims, a lower reading is treated as better;
+  otherwise a higher reading is treated as better. It is a summary, not trading
+  advice.
+- All alert types use the same currency/impact filter.
+- Sent alerts and summaries are recorded in `data/state.json`, so restarting the
+  bot will not repeat messages that were already delivered.
 - The daily digest is scheduled in the server's configured timezone, but the
   times inside the embed render in each member's own timezone.
 
@@ -223,6 +243,10 @@ On macOS, use `launchd` or run it inside `tmux`/`screen` instead.
 | `DEFAULT_DIGEST_TIME` | `08:00` | Daily digest time (`HH:MM`) or `off`. |
 | `DEFAULT_REMINDERS` | `15,60` | Minutes before events; comma separated, or `off`. |
 | `DEFAULT_TIMEZONE` | `UTC` | IANA timezone used for digest scheduling. |
+| `DEFAULT_RELEASE_ALERTS` | `true` | Send an alert at the exact release time. |
+| `DEFAULT_RELEASE_SUMMARY` | `true` | Send a post-release actual-vs-forecast summary. |
+| `RELEASE_SUMMARY_DELAY_SECONDS` | `120` | Wait after release before fetching the actual value. |
+| `RELEASE_SUMMARY_MAX_WAIT_SECONDS` | `900` | Keep retrying for the actual value for this long. |
 | `FEED_TTL_SECONDS` | `600` | Calendar feed cache duration. |
 
 Per-server settings are stored in `data/settings.json`.
@@ -235,7 +259,7 @@ forex-discord-bot/
 ├── calendar_source.py   # ForexFactory feed client, event model, filters
 ├── html_parser.py       # HTML fallback parser (BeautifulSoup only)
 ├── config.py            # env defaults + per-guild JSON settings/state
-├── formatting.py        # Discord embeds and impact styling
+├── formatting.py        # Discord embeds, impact styling, release summaries
 ├── requirements.txt
 ├── .env.example
 └── run.bat              # Windows launcher (Linux: use systemd, see above)
@@ -261,7 +285,12 @@ forex-discord-bot/
 - ForexFactory's weekly feed covers the current week. The HTML fallback fills in
   dates outside that window (for example next week's events in `/week`), with a
   six-hour cache per day.
-- The feed does not expose released **actual** values, so embeds show forecast
-  and previous values. The HTML fallback does capture actual values when
-  available, but embeds still show forecast/previous for consistency.
+- The weekly JSON feed does not expose released **actual** values. Forecaster
+  and previous values are shown in reminders and digests; post-release
+  summaries fetch the actual value from the HTML calendar.
+- If ForexFactory has not published an actual value within
+  `RELEASE_SUMMARY_MAX_WAIT_SECONDS`, that summary is skipped rather than sent
+  with an empty result.
+- The release summary's better/worse label is a rule-of-thumb comparison of
+  actual vs forecast, not market analysis or a trading signal.
 - Respect ForexFactory's terms of use and keep the refresh interval reasonable.

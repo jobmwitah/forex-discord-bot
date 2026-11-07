@@ -290,17 +290,25 @@ def _http_get_html(url: str, timeout: float = 25.0) -> str:
     return response.text
 
 
-def scrape_day_sync(day: date, timeout: float = 25.0) -> list[Event]:
-    """Scrape one calendar day via HTML. Cached for six hours."""
+def scrape_day_sync(
+    day: date, timeout: float = 25.0, cache_ttl: float | None = None
+) -> list[Event]:
+    """Scrape one calendar day via HTML.
+
+    The default cache is six hours. Callers that need fresher data (for example
+    reading a released actual value) can pass a small ``cache_ttl``.
+    """
+
+    ttl = _HTML_CACHE_TTL if cache_ttl is None else max(0.0, float(cache_ttl))
 
     cached = _html_cache.get(day)
-    if cached and (time.monotonic() - cached[0]) < _HTML_CACHE_TTL:
+    if cached and (time.monotonic() - cached[0]) < ttl:
         return list(cached[1])
 
     global _last_html_fetch
     with _html_lock:
         cached = _html_cache.get(day)
-        if cached and (time.monotonic() - cached[0]) < _HTML_CACHE_TTL:
+        if cached and (time.monotonic() - cached[0]) < ttl:
             return list(cached[1])
 
         wait = _HTML_MIN_INTERVAL - (time.monotonic() - _last_html_fetch)
@@ -513,6 +521,10 @@ class CalendarFeed:
             return events
 
 
+def _normalise_title(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (value or "").lower())
+
+
 class CalendarService:
     """Combines the JSON feed with the HTML fallback for date coverage."""
 
@@ -569,3 +581,51 @@ class CalendarService:
                 merged.setdefault(event.dedupe_key, event)
 
         return sorted(merged.values(), key=lambda event: event.when)
+
+    async def event_details(self, event: Event) -> Event | None:
+        """Re-scrape the event's day page to read the released actual value.
+
+        The weekly JSON feed contains no actual values, so this bypasses the
+        normal six-hour HTML cache and uses a short one-minute cache instead.
+        The site's calendar day can differ from the UTC date, so adjacent days
+        are tried as well.
+        """
+
+        day = event.when.date()
+        target_title = _normalise_title(event.title)
+
+        for page_day in (day, day + timedelta(days=1), day - timedelta(days=1)):
+            try:
+                scraped = await asyncio.to_thread(
+                    scrape_day_sync, page_day, 25.0, 60.0
+                )
+            except Exception as exc:
+                log.warning("Could not refresh HTML for %s: %s", page_day, exc)
+                continue
+
+            matches = [
+                item
+                for item in scraped
+                if item.currency == event.currency
+                and _normalise_title(item.title) == target_title
+            ]
+            if not matches:
+                # Titles occasionally change slightly between feed and page.
+                matches = [
+                    item
+                    for item in scraped
+                    if item.currency == event.currency
+                    and (
+                        target_title in _normalise_title(item.title)
+                        or _normalise_title(item.title) in target_title
+                    )
+                ]
+            if matches:
+                return min(
+                    matches,
+                    key=lambda item: abs(
+                        (item.when - event.when).total_seconds()
+                    ),
+                )
+
+        return None

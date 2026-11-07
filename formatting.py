@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from typing import Iterable, Sequence
 
@@ -181,6 +182,156 @@ def alert_embed(event: Event, minutes_before: int) -> discord.Embed:
     embed.add_field(name="Forecast", value=f"`{_value_or_dash(event.forecast)}`", inline=True)
     embed.add_field(name="Previous", value=f"`{_value_or_dash(event.previous)}`", inline=True)
     embed.set_footer(text="ForexFactory economic calendar alert")
+    return embed
+
+
+SURPRISE_COLOR = {
+    "better": 0x2ECC71,
+    "worse": 0xED4245,
+    "inline": 0x95A5A6,
+    "unknown": 0x5865F2,
+}
+
+# Indicators where a lower reading is usually the stronger outcome for the
+# currency. This is only a heuristic for the release summary.
+_LOWER_IS_BETTER = (
+    "unemployment",
+    "jobless",
+    "claims",
+    "layoff",
+    "bankrupt",
+)
+
+_METRIC_RE = re.compile(
+    r"^\s*([+-]?\d[\d,]*(?:\.\d+)?)\s*([%KMBT]?)\s*$",
+    re.IGNORECASE,
+)
+
+_METRIC_SCALE = {"": 1.0, "%": 1.0, "K": 1e3, "M": 1e6, "B": 1e9, "T": 1e12}
+
+
+def _metric(value: str) -> tuple[float, str] | None:
+    """Parse ``0.3%``, ``250K`` or ``-5.8B`` into (number, unit)."""
+
+    match = _METRIC_RE.match(value or "")
+    if match is None:
+        return None
+    try:
+        number = float(match.group(1).replace(",", ""))
+    except ValueError:
+        return None
+    unit = match.group(2).upper()
+    if unit not in _METRIC_SCALE:
+        return None
+    return number, unit
+
+
+def summary_result(event: Event) -> tuple[str, str, int]:
+    """Return (headline, explanation, colour) for a released event.
+
+    Compares actual against forecast with a rule-of-thumb direction for the
+    currency. It is deliberately not a trading recommendation.
+    """
+
+    actual = _metric(event.actual)
+    forecast = _metric(event.forecast)
+
+    if actual is None or forecast is None or actual[1] != forecast[1]:
+        return (
+            "Result published",
+            "Compare the actual value with the forecast above. Direction "
+            "depends on the market's positioning and reaction.",
+            SURPRISE_COLOR["unknown"],
+        )
+
+    difference = actual[0] - forecast[0]
+    if abs(difference) < 1e-9:
+        return (
+            "In line with expectations",
+            "No meaningful surprise versus forecast. Watch the initial "
+            "market reaction rather than the number alone.",
+            SURPRISE_COLOR["inline"],
+        )
+
+    title = event.title.lower()
+    lower_is_better = any(word in title for word in _LOWER_IS_BETTER)
+    higher = difference > 0
+    better = (not higher) if lower_is_better else higher
+
+    direction = "above" if higher else "below"
+    if better:
+        return (
+            "Better than expected",
+            f"Actual came in {direction} forecast, which is typically "
+            f"supportive for {event.currency}.",
+            SURPRISE_COLOR["better"],
+        )
+    return (
+        "Worse than expected",
+        f"Actual came in {direction} forecast, which is typically a "
+        f"headwind for {event.currency}.",
+        SURPRISE_COLOR["worse"],
+    )
+
+
+def release_alert_embed(event: Event, *, test: bool = False) -> discord.Embed:
+    """Embed sent at the exact moment an event is released."""
+
+    embed = discord.Embed(
+        title=(
+            f"{impact_emoji(event.impact)} {event.currency} · "
+            f"{event.title} — releasing now"
+        )[:256],
+        description=(
+            f"**{event.impact.title()} impact** event is being released now\n"
+            f"<t:{event.unix}:f> · <t:{event.unix}:R>"
+        ),
+        color=IMPACT_COLOR.get(event.impact, IMPACT_COLOR["unknown"]),
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.add_field(
+        name="Forecast", value=f"`{_value_or_dash(event.forecast)}`", inline=True
+    )
+    embed.add_field(
+        name="Previous", value=f"`{_value_or_dash(event.previous)}`", inline=True
+    )
+    embed.set_footer(
+        text="ForexFactory economic calendar · release alert"
+        + (" · TEST" if test else "")
+    )
+    return embed
+
+
+def release_summary_embed(event: Event, *, test: bool = False) -> discord.Embed:
+    """Post-release embed with the actual value and a brief impact summary."""
+
+    headline, explanation, color = summary_result(event)
+    embed = discord.Embed(
+        title=(
+            f"📊 {event.currency} · {event.title} — release summary"
+        )[:256],
+        description=f"**{headline}**\n{explanation}",
+        color=color,
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.add_field(
+        name="Actual", value=f"`{_value_or_dash(event.actual)}`", inline=True
+    )
+    embed.add_field(
+        name="Forecast", value=f"`{_value_or_dash(event.forecast)}`", inline=True
+    )
+    embed.add_field(
+        name="Previous", value=f"`{_value_or_dash(event.previous)}`", inline=True
+    )
+    embed.add_field(
+        name="Released",
+        value=f"<t:{event.unix}:f> · <t:{event.unix}:R>",
+        inline=False,
+    )
+    embed.set_footer(
+        text="ForexFactory economic calendar · actual vs forecast heuristic"
+        + (" · TEST" if test else "")
+    )
     return embed
 
 

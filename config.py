@@ -74,6 +74,13 @@ def _env_reminders() -> list[int]:
     return sorted(minutes, reverse=True)
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off", "disabled"}
+
+
 @dataclass
 class GuildSettings:
     alert_channel_id: int | None = None
@@ -83,6 +90,8 @@ class GuildSettings:
     reminder_minutes: list[int] = field(default_factory=lambda: [15, 60])
     timezone: str = "UTC"
     enabled: bool = True
+    release_alerts: bool = True
+    release_summary: bool = True
 
     def copy(self) -> "GuildSettings":
         return replace(
@@ -100,6 +109,8 @@ class GuildSettings:
             "reminder_minutes": sorted(set(self.reminder_minutes), reverse=True),
             "timezone": self.timezone,
             "enabled": self.enabled,
+            "release_alerts": self.release_alerts,
+            "release_summary": self.release_summary,
         }
 
     @classmethod
@@ -143,6 +154,8 @@ class GuildSettings:
             ],
             timezone=timezone_name,
             enabled=bool(data.get("enabled", True)),
+            release_alerts=bool(data.get("release_alerts", True)),
+            release_summary=bool(data.get("release_summary", True)),
         )
 
 
@@ -153,6 +166,8 @@ def default_settings() -> GuildSettings:
         digest_time=_env_digest(),
         reminder_minutes=_env_reminders(),
         timezone=_env_timezone(),
+        release_alerts=_env_bool("DEFAULT_RELEASE_ALERTS", True),
+        release_summary=_env_bool("DEFAULT_RELEASE_SUMMARY", True),
     )
 
 
