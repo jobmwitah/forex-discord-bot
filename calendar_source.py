@@ -5,8 +5,9 @@ explicit UTC offset, so scheduling reminders is unambiguous. The feed only
 covers the current week and is occasionally rate-limited, so results are cached
 in memory and on disk.
 
-Fallback source: the HTML calendar parsed by ``forex-pytory`` (the engine used
-by the ForexFactoryScrapper repo). ForexFactory renders HTML timestamps in the
+Fallback source: the HTML calendar, parsed by the small in-tree parser in
+``html_parser.py`` (a trimmed port of the ForexFactoryScrapper repo's
+``forex-pytory`` parser). ForexFactory renders HTML timestamps in the
 requester's timezone, so the fallback derives the site's current UTC offset from
 the "now" clock in the calendar header (``calendar__header-time``) and applies
 it to parsed events. This is used for dates outside the JSON feed's coverage or
@@ -306,14 +307,13 @@ def scrape_day_sync(day: date, timeout: float = 25.0) -> list[Event]:
         if wait > 0:
             time.sleep(wait)
 
-        from forex_pytory.core.scraper.common import parse_calendar_from_html
-        from forex_pytory.core.scraper.forex_factory_scraper import get_url
+        from html_parser import calendar_url, parse_calendar_html
 
-        url = get_url(day=day.day, month=day.month, year=day.year, timeline="day")
+        url = calendar_url(day)
         try:
             html = _http_get_html(url, timeout=timeout)
             offset_minutes = _site_offset_minutes(html)
-            records = parse_calendar_from_html(html, url)
+            records = parse_calendar_html(html, day)
         finally:
             _last_html_fetch = time.monotonic()
 
@@ -321,13 +321,8 @@ def scrape_day_sync(day: date, timeout: float = 25.0) -> list[Event]:
     events: list[Event] = []
 
     for record in records:
-        try:
-            naive = datetime.strptime(str(record.time), "%d/%m/%Y %H:%M")
-        except (TypeError, ValueError):
-            continue
-
-        when = naive.replace(tzinfo=site_tz).astimezone(timezone.utc)
-        title = _clean(record.event, 300)
+        when = record.when.replace(tzinfo=site_tz).astimezone(timezone.utc)
+        title = _clean(record.title, 300)
         currency = _clean(record.currency, 8).upper()
         if not title or not currency:
             continue
@@ -336,7 +331,7 @@ def scrape_day_sync(day: date, timeout: float = 25.0) -> list[Event]:
         if impact not in IMPACT_RANK:
             impact = "low"
 
-        digest = _clean(record.id, 40) or hashlib.sha1(
+        digest = _clean(record.event_id, 40) or hashlib.sha1(
             f"{currency}|{title}|{when.isoformat()}".encode("utf-8")
         ).hexdigest()[:16]
 

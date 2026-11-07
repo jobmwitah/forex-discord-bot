@@ -32,9 +32,12 @@ The bot therefore reads ForexFactory's official weekly JSON feeds
 (`ff_calendar_thisweek.json`) as its primary source, the same data the site
 uses. Every event carries an explicit UTC offset, which is exactly what an
 alert scheduler needs. The JSON feed only covers the current week, so an HTML
-fallback (using the repo's `forex-pytory` parser) fills in dates outside that
-coverage. The fallback infers the site's current UTC offset from the clock in
-the calendar header, which sidesteps the timezone problem described above.
+fallback (a small in-tree parser based on the repo's `forex-pytory` logic)
+fills in dates outside that coverage. The fallback infers the site's current
+UTC offset from the clock in the calendar header, which sidesteps the timezone
+problem described above. Keeping the parser in-tree also avoids the
+`forex-pytory` → `pandas` dependency, which has no wheels for newer Python
+versions such as 3.14.
 
 ---
 
@@ -95,6 +98,9 @@ python -m venv .venv
 Or double-click `run.bat`.
 
 ### Linux / macOS
+
+Requires Python 3.10+ (tested on 3.12 and 3.14). All dependencies ship as
+wheels, so no compiler or `pandas` build is needed.
 
 ```bash
 # Debian/Ubuntu only: install Python and venv support if missing
@@ -227,6 +233,7 @@ Per-server settings are stored in `data/settings.json`.
 forex-discord-bot/
 ├── bot.py               # Discord commands, alert scheduler, CLI preview
 ├── calendar_source.py   # ForexFactory feed client, event model, filters
+├── html_parser.py       # HTML fallback parser (BeautifulSoup only)
 ├── config.py            # env defaults + per-guild JSON settings/state
 ├── formatting.py        # Discord embeds and impact styling
 ├── requirements.txt
@@ -242,6 +249,9 @@ forex-discord-bot/
   the bot has View Channel, Send Messages and Embed Links in the target channel.
 - **Feed error in logs** — the bot keeps serving the last cached calendar. Check
   internet access to `nfs.faireconomy.media`.
+- **pip tries to build pandas** — an older revision depended on `forex-pytory`.
+  Run `git pull` and `pip install -r requirements.txt` again; the current
+  version requires no pandas.
 - **Times look wrong** — check `timezone` in `/settings`; it only controls when
   the digest runs and which calendar day a command means. Embed timestamps are
   always rendered locally by Discord.
