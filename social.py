@@ -254,7 +254,7 @@ def fetch_buffer_channels(api_key: str) -> list[dict]:
 
     payload = _buffer_request(
         api_key,
-        "query { account { organizations { id name ownerEmail } } }",
+        "query GetOrganizations { account { organizations { id name ownerEmail } } }",
     )
     organizations = (
         (payload.get("data") or {}).get("account", {}).get("organizations") or []
@@ -266,7 +266,7 @@ def fetch_buffer_channels(api_key: str) -> list[dict]:
         if not org_id:
             continue
         query = (
-            "query { channels(input: {organizationId: "
+            "query GetChannels { channels(input: {organizationId: "
             f"{json.dumps(org_id)}"
             "}) { id name displayName service isQueuePaused } }"
         )
@@ -303,7 +303,7 @@ class BufferPublisher:
         text_literal = json.dumps(text, ensure_ascii=False)
         channel_literal = json.dumps(self.channel_id)
         query = (
-            "mutation { createPost(input: {"
+            "mutation CreatePost { createPost(input: {"
             f"text: {text_literal}, "
             f"channelId: {channel_literal}, "
             "schedulingType: automatic, "
