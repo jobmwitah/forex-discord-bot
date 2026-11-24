@@ -57,6 +57,15 @@ from social import (
     summary_text,
 )
 
+try:
+    from graphics import CardImage, render_card
+except Exception as _graphics_error:  # noqa: BLE001 - images stay optional
+    CardImage = None  # type: ignore[assignment,misc]
+    render_card = None  # type: ignore[assignment]
+    _GRAPHICS_IMPORT_ERROR: Exception | None = _graphics_error
+else:
+    _GRAPHICS_IMPORT_ERROR = None
+
 load_dotenv()
 
 # Windows consoles default to cp1252, which cannot print the emoji used in
@@ -73,6 +82,12 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 log = logging.getLogger("forex-bot")
+
+if _GRAPHICS_IMPORT_ERROR is not None:
+    log.warning(
+        "Social image cards are off (install Pillow): %s",
+        _GRAPHICS_IMPORT_ERROR,
+    )
 
 try:
     FEED_TTL_SECONDS = max(60, int(os.getenv("FEED_TTL_SECONDS", "600")))
@@ -158,6 +173,33 @@ def _released_actual(value: str) -> str:
     if cleaned.lower() in {"", "n/a", "na", "-", "—"}:
         return ""
     return cleaned
+
+
+def _social_card(
+    event: Event,
+    kind: str,
+    tz: ZoneInfo,
+    *,
+    minutes: int = 15,
+    test: bool = False,
+) -> CardImage | None:
+    """Render one branded card; a drawing failure must never stop alerts."""
+
+    if render_card is None or not social_manager.images_enabled:
+        return None
+    try:
+        return render_card(
+            event,
+            kind,
+            tz,
+            minutes=minutes,
+            brand=social_manager.config.brand_name,
+            handle=social_manager.config.brand_handle,
+            test=test,
+        )
+    except Exception as exc:  # noqa: BLE001 - text-only fallback
+        log.warning("Could not render %s social card: %s", kind, exc)
+        return None
 
 
 def _settings_embed(guild: discord.Guild, settings) -> discord.Embed:
@@ -267,7 +309,11 @@ class ForexBot(commands.Bot):
             await asyncio.sleep(10)
 
     async def _social_publish(
-        self, kind: str, key: str, text: str
+        self,
+        kind: str,
+        key: str,
+        text: str,
+        image: CardImage | None = None,
     ) -> dict[str, str]:
         """Publish one message to every target that wants this kind.
 
@@ -286,7 +332,13 @@ class ForexBot(commands.Bot):
                 continue
 
             try:
-                await asyncio.to_thread(social_manager.publish, target, text)
+                await asyncio.to_thread(
+                    social_manager.publish,
+                    target,
+                    text,
+                    image,
+                    key,
+                )
             except Exception as exc:  # noqa: BLE001 - keep the alert loop alive
                 self._social_cooldowns[state_key] = (
                     time.monotonic() + SOCIAL_RETRY_SECONDS
@@ -339,20 +391,28 @@ class ForexBot(commands.Bot):
                 trigger = event.when - timedelta(minutes=minutes)
                 delta = (now - trigger).total_seconds()
                 if 0 <= delta <= 90:
+                    card = await asyncio.to_thread(
+                        _social_card, event, "reminder", tz, minutes=minutes
+                    )
                     await self._social_publish(
                         "reminder",
                         f"rem:{event.id}:{minutes}",
                         reminder_text(event, minutes, tz),
+                        card,
                     )
 
         # Release-time alert (T-0).
         for event in matching:
             delta = (now - event.when).total_seconds()
             if 0 <= delta <= 90:
+                card = await asyncio.to_thread(
+                    _social_card, event, "release", tz
+                )
                 await self._social_publish(
                     "release",
                     f"release:{event.id}",
                     release_text(event, tz),
+                    card,
                 )
 
         # Post-release summary with the actual value. Only scrape when at
@@ -393,18 +453,20 @@ class ForexBot(commands.Bot):
                 # Actual not published yet; retry on the next tick.
                 continue
 
+            updated = replace(
+                event,
+                actual=actual,
+                forecast=forecast,
+                previous=previous,
+            )
+            card = await asyncio.to_thread(
+                _social_card, updated, "summary", tz
+            )
             await self._social_publish(
                 "summary",
                 f"summary:{event.id}",
-                summary_text(
-                    replace(
-                        event,
-                        actual=actual,
-                        forecast=forecast,
-                        previous=previous,
-                    ),
-                    tz,
-                ),
+                summary_text(updated, tz),
+                card,
             )
 
     async def _alert_tick(self) -> None:
@@ -903,42 +965,50 @@ async def test_command(
             )
         else:
             tz = _tz(social_manager.config.timezone)
-            samples: list[tuple[str, str]] = []
+            samples: list[tuple[str, str, CardImage | None]] = []
             if selected in {"all", "reminder"}:
+                card = await asyncio.to_thread(
+                    _social_card, base, "reminder", tz, test=True
+                )
                 samples.append(
-                    ("reminder", reminder_text(base, 15, tz, test=True))
+                    ("reminder", reminder_text(base, 15, tz, test=True), card)
                 )
             if selected in {"all", "release"}:
+                release_sample = replace(base, when=now)
+                card = await asyncio.to_thread(
+                    _social_card, release_sample, "release", tz, test=True
+                )
                 samples.append(
                     (
                         "release",
-                        release_text(replace(base, when=now), tz, test=True),
+                        release_text(release_sample, tz, test=True),
+                        card,
                     )
                 )
             if selected in {"all", "summary"}:
+                card = await asyncio.to_thread(
+                    _social_card, summary_sample, "summary", tz, test=True
+                )
                 samples.append(
                     (
                         "summary",
-                        summary_text(
-                            replace(
-                                base,
-                                when=now - timedelta(minutes=2),
-                                actual="0.4%",
-                            ),
-                            tz,
-                            test=True,
-                        ),
+                        summary_text(summary_sample, tz, test=True),
+                        card,
                     )
                 )
 
-            for sample_kind, text in samples:
+            for sample_kind, text, card in samples:
                 targets = social_manager.targets_for(sample_kind)
                 if not targets:
                     continue
                 for target in targets:
                     try:
                         await asyncio.to_thread(
-                            social_manager.publish, target, text
+                            social_manager.publish,
+                            target,
+                            text,
+                            card,
+                            f"test-{sample_kind}",
                         )
                     except Exception as exc:  # noqa: BLE001
                         social_report.append(

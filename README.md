@@ -218,15 +218,20 @@ runs exactly as before and only posts to Discord.
 4. For Bluesky, create a free account and an **App Password** (Settings → App
    Passwords). Add `BLUESKY_HANDLE` (e.g. `yourname.bsky.social`) and
    `BLUESKY_APP_PASSWORD`. Never use your main Bluesky password.
-5. Protect the file and restart:
+5. Optional but recommended: create a free Cloudinary account at
+   <https://cloudinary.com> and set `CLOUDINARY_CLOUD_NAME`,
+   `CLOUDINARY_API_KEY` and `CLOUDINARY_API_SECRET` from its dashboard. Buffer
+   has no file-upload API, so X cards are attached as a public Cloudinary URL.
+   Bluesky uploads image bytes directly and does not need Cloudinary.
+6. Protect the file and restart:
 
    ```bash
    chmod 600 .env
    sudo systemctl restart forex-bot
    ```
 
-6. Verify with `/test social:true`. This posts a public test message to each
-   configured target that accepts that message type.
+7. Verify with `/test social:true`. This posts a public test message and a
+   branded card to each configured target that accepts that message type.
 
 ### What gets posted
 
@@ -239,8 +244,29 @@ The defaults are deliberately conservative:
   request quota comfortable.
 - **Bluesky**: `all` — reminder, release and post-release summary.
 
-Posts are plain text with the event time, forecast/previous values and hashtags.
-No URLs are included, so no link-card dependencies and no X URL surcharge.
+Posts include the event time, forecast/previous values and hashtags. Images are
+attached as branded cards, so no links are needed: no link-card dependency and
+no X URL surcharge.
+
+### Branded image cards
+
+Every social post includes a deterministic **1200×675** card rendered locally
+with Pillow. The cards use the dark-navy/blue brand style, the event title,
+impact badge, currency, time, and forecast/previous/actual values. No AI image
+service is involved, so the numbers are exact and each card takes well under a
+second to render.
+
+- The bundled font is `assets/fonts/Roboto-Variable.ttf` (SIL OFL licence in
+  `assets/fonts/OFL.txt`).
+- PNG is used by default; the renderer falls back to JPEG quality 90 if a card
+  exceeds Bluesky's 1 MB blob limit.
+- `SOCIAL_BRAND_NAME` and `SOCIAL_BRAND_HANDLE` set the header and footer text.
+- `SOCIAL_IMAGES=false` turns cards off and posts text only.
+
+Image failures never suppress an alert: if rendering fails, Cloudinary is
+unavailable, or Bluesky rejects the blob, the text post is still published.
+X cards require all three `CLOUDINARY_*` variables; Bluesky cards work without
+them.
 
 Social posting is global (one X/Bluesky account for every Discord server) and is
 deduplicated in `data/state.json`, so restarts do not repeat posts. Failed posts
@@ -317,6 +343,13 @@ On macOS, use `launchd` or run it inside `tmux`/`screen` instead.
 | `SOCIAL_MIN_IMPACT` | `high` | Minimum impact for social posts. |
 | `SOCIAL_REMINDER_MINUTES` | `15` | Reminder offsets for social posts. |
 | `SOCIAL_TIMEZONE` | `UTC` | Timezone used in social post times. |
+| `SOCIAL_IMAGES` | `true` | Render branded 1200×675 cards for social posts. |
+| `SOCIAL_BRAND_NAME` | `Economic Calendar` | Brand text in the card header/footer. |
+| `SOCIAL_BRAND_HANDLE` | empty | Optional handle shown next to the brand. |
+| `SOCIAL_FONT_PATH` | bundled Roboto | Override the card font file. |
+| `CLOUDINARY_CLOUD_NAME` | empty | Cloudinary cloud name for X image hosting. |
+| `CLOUDINARY_API_KEY` | empty | Cloudinary API key. |
+| `CLOUDINARY_API_SECRET` | empty | Cloudinary API secret (never commit or print). |
 
 Per-server settings are stored in `data/settings.json`.
 
@@ -329,7 +362,9 @@ forex-discord-bot/
 ├── html_parser.py       # HTML fallback parser (BeautifulSoup only)
 ├── config.py            # env defaults + per-guild JSON settings/state
 ├── formatting.py        # Discord embeds, impact styling, release summaries
+├── graphics.py          # branded 1200x675 social cards (Pillow)
 ├── social.py            # free X (Buffer) and Bluesky posting + CLI helper
+├── assets/fonts/        # bundled Roboto variable font + OFL licence
 ├── requirements.txt
 ├── .env.example
 └── run.bat              # Windows launcher (Linux: use systemd, see above)

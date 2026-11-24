@@ -17,6 +17,7 @@ Buffer organization/channel IDs needed for ``BUFFER_CHANNEL_ID``.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -24,6 +25,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
@@ -31,6 +33,9 @@ from dotenv import load_dotenv
 
 from calendar_source import Event, parse_currency_list
 from formatting import impact_emoji, summary_result
+
+if TYPE_CHECKING:
+    from graphics import CardImage
 
 load_dotenv()
 
@@ -54,6 +59,13 @@ class SocialError(RuntimeError):
 def _env_mode(name: str, default: str) -> str:
     value = os.getenv(name, default).strip().lower()
     return value if value in _MODES else default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off", "disabled"}
 
 
 def _env_minutes(name: str, default: str) -> list[int]:
@@ -91,6 +103,12 @@ class SocialConfig:
     bluesky_handle: str = ""
     bluesky_password: str = ""
     bluesky_pds: str = BLUESKY_DEFAULT_PDS
+    images_enabled: bool = True
+    brand_name: str = "Economic Calendar"
+    brand_handle: str = ""
+    cloudinary_cloud_name: str = ""
+    cloudinary_api_key: str = ""
+    cloudinary_api_secret: str = ""
 
 
 def load_social_config() -> SocialConfig:
@@ -127,6 +145,15 @@ def load_social_config() -> SocialConfig:
             os.getenv("BLUESKY_PDS", BLUESKY_DEFAULT_PDS).strip()
             or BLUESKY_DEFAULT_PDS
         ),
+        images_enabled=_env_bool("SOCIAL_IMAGES", True),
+        brand_name=(
+            os.getenv("SOCIAL_BRAND_NAME", "Economic Calendar").strip()
+            or "Economic Calendar"
+        ),
+        brand_handle=os.getenv("SOCIAL_BRAND_HANDLE", "").strip(),
+        cloudinary_cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME", "").strip(),
+        cloudinary_api_key=os.getenv("CLOUDINARY_API_KEY", "").strip(),
+        cloudinary_api_secret=os.getenv("CLOUDINARY_API_SECRET", "").strip(),
     )
 
 
@@ -288,6 +315,80 @@ def fetch_buffer_channels(api_key: str) -> list[dict]:
     return rows
 
 
+def _safe_slug(value: str, fallback: str = "card") -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "-", value).strip("-")
+    return (cleaned or fallback)[:80]
+
+
+class CloudinaryHost:
+    """Upload a card to Cloudinary and return its permanent public URL.
+
+    Buffer has no file-upload endpoint; X posts need a public HTTPS image URL.
+    Cloudinary's free tier is enough for hundreds of small cards per month.
+    """
+
+    def __init__(self, cloud_name: str, api_key: str, api_secret: str) -> None:
+        self.cloud_name = cloud_name
+        self.api_key = api_key
+        self.api_secret = api_secret
+
+    def upload(self, image: "CardImage", public_id: str = "") -> str:
+        timestamp = int(time.time())
+        params = {
+            "folder": "economic-calendar",
+            "overwrite": "false",
+            "public_id": _safe_slug(public_id or f"card-{timestamp}"),
+            "timestamp": str(timestamp),
+        }
+
+        # Cloudinary signs the alphabetically sorted parameters with SHA-1.
+        to_sign = "&".join(f"{key}={params[key]}" for key in sorted(params))
+        signature = hashlib.sha1(
+            (to_sign + self.api_secret).encode("utf-8")
+        ).hexdigest()
+
+        payload = dict(params)
+        payload["api_key"] = self.api_key
+        payload["signature"] = signature
+        extension = "jpg" if image.mime == "image/jpeg" else "png"
+        files = {
+            "file": (
+                f"{params['public_id']}.{extension}",
+                image.data,
+                image.mime,
+            )
+        }
+
+        try:
+            response = requests.post(
+                f"https://api.cloudinary.com/v1_1/{self.cloud_name}/image/upload",
+                data=payload,
+                files=files,
+                timeout=REQUEST_TIMEOUT * 3,
+            )
+        except requests.RequestException as exc:
+            raise SocialError(f"Cloudinary request failed: {exc}") from exc
+
+        if response.status_code != 200:
+            raise SocialError(
+                f"Cloudinary HTTP {response.status_code}: {response.text[:200]}"
+            )
+
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise SocialError("Cloudinary returned invalid JSON") from exc
+
+        if data.get("error"):
+            message = data["error"].get("message", "unknown error")
+            raise SocialError(f"Cloudinary error: {message}")
+
+        url = data.get("secure_url") or data.get("url")
+        if not url:
+            raise SocialError("Cloudinary returned no image URL")
+        return str(url)
+
+
 class BufferPublisher:
     """Publish to X through Buffer's GraphQL API."""
 
@@ -298,16 +399,24 @@ class BufferPublisher:
         self.api_key = api_key
         self.channel_id = channel_id
 
-    def publish(self, text: str) -> str:
+    def publish(self, text: str, image_url: str | None = None) -> str:
         text = _clip(text, self.limit)
         text_literal = json.dumps(text, ensure_ascii=False)
         channel_literal = json.dumps(self.channel_id)
+        assets = ""
+        if image_url:
+            assets = (
+                ", assets: [{ image: { url: "
+                f"{json.dumps(image_url, ensure_ascii=False)}"
+                " } }]"
+            )
         query = (
             "mutation CreatePost { createPost(input: {"
             f"text: {text_literal}, "
             f"channelId: {channel_literal}, "
             "schedulingType: automatic, "
             "mode: shareNow"
+            f"{assets}"
             "}) {"
             " ... on PostActionSuccess { post { id } }"
             " ... on MutationError { message }"
@@ -366,13 +475,74 @@ class BlueskyPublisher:
         if not self._token or time.time() >= self._expires:
             self._login()
 
-    def publish(self, text: str) -> str:
+    def _upload_blob(self, data: bytes, mime: str) -> dict:
+        for attempt in (1, 2):
+            self._ensure_session()
+            try:
+                response = requests.post(
+                    f"{self.pds}/xrpc/com.atproto.repo.uploadBlob",
+                    headers={
+                        "Authorization": f"Bearer {self._token}",
+                        "Content-Type": mime,
+                    },
+                    data=data,
+                    timeout=REQUEST_TIMEOUT * 2,
+                )
+            except requests.RequestException as exc:
+                raise SocialError(f"Bluesky image upload failed: {exc}") from exc
+
+            if response.status_code == 401 and attempt == 1:
+                self._token = ""
+                continue
+            if response.status_code >= 300:
+                raise SocialError(
+                    f"Bluesky image HTTP {response.status_code}: "
+                    f"{response.text[:200]}"
+                )
+
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                raise SocialError("Bluesky image upload returned invalid JSON") from exc
+
+            blob = payload.get("blob")
+            if not blob:
+                raise SocialError("Bluesky image upload returned no blob")
+            return blob
+
+        raise SocialError("Bluesky rejected the session twice")
+
+    def _image_embed(self, image: "CardImage") -> dict | None:
+        if len(image.data) > 1_000_000:
+            log.warning("Bluesky image is larger than 1 MB; posting text only")
+            return None
+        try:
+            blob = self._upload_blob(image.data, image.mime)
+        except SocialError as exc:
+            log.warning("Bluesky image upload failed; posting text only: %s", exc)
+            return None
+        return {
+            "$type": "app.bsky.embed.images",
+            "images": [
+                {
+                    "alt": image.alt[:2000],
+                    "image": blob,
+                    "aspectRatio": {
+                        "width": image.width,
+                        "height": image.height,
+                    },
+                }
+            ],
+        }
+
+    def publish(self, text: str, image: "CardImage | None" = None) -> str:
         text = _clip(text, self.limit)
         created = (
             datetime.now(timezone.utc)
             .isoformat(timespec="seconds")
             .replace("+00:00", "Z")
         )
+        embed = self._image_embed(image) if image is not None else None
 
         for attempt in (1, 2):
             self._ensure_session()
@@ -384,6 +554,8 @@ class BlueskyPublisher:
             facets = _hashtag_facets(text)
             if facets:
                 record["facets"] = facets
+            if embed is not None:
+                record["embed"] = embed
 
             try:
                 response = requests.post(
@@ -419,6 +591,20 @@ class SocialManager:
     def __init__(self, config: SocialConfig) -> None:
         self.config = config
         self.publishers: dict[str, BufferPublisher | BlueskyPublisher] = {}
+        self.images_enabled = config.images_enabled
+        self.cloudinary: CloudinaryHost | None = None
+
+        if (
+            config.images_enabled
+            and config.cloudinary_cloud_name
+            and config.cloudinary_api_key
+            and config.cloudinary_api_secret
+        ):
+            self.cloudinary = CloudinaryHost(
+                config.cloudinary_cloud_name,
+                config.cloudinary_api_key,
+                config.cloudinary_api_secret,
+            )
 
         if (
             config.x_mode != "off"
@@ -440,6 +626,16 @@ class SocialManager:
                 config.bluesky_pds,
             )
 
+        if (
+            self.images_enabled
+            and "x" in self.publishers
+            and self.cloudinary is None
+        ):
+            log.warning(
+                "X image cards are off: set CLOUDINARY_CLOUD_NAME, "
+                "CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET"
+            )
+
     @property
     def active(self) -> bool:
         return bool(self.publishers)
@@ -455,10 +651,36 @@ class SocialManager:
             if modes.get(name) in {"all", kind}
         ]
 
-    def publish(self, target: str, text: str) -> str:
+    def publish(
+        self,
+        target: str,
+        text: str,
+        image: "CardImage | None" = None,
+        image_id: str = "",
+    ) -> str:
         publisher = self.publishers.get(target)
         if publisher is None:
             raise SocialError(f"Social target {target!r} is not configured")
+
+        if isinstance(publisher, BufferPublisher):
+            image_url = None
+            if image is not None and self.cloudinary is not None:
+                try:
+                    image_url = self.cloudinary.upload(
+                        image,
+                        public_id=f"{image_id or 'card'}-{int(time.time())}",
+                    )
+                except SocialError as exc:
+                    # A broken image host must not suppress a time-sensitive alert.
+                    log.warning(
+                        "Cloudinary upload failed; posting to X without image: %s",
+                        exc,
+                    )
+            return publisher.publish(text, image_url=image_url)
+
+        if isinstance(publisher, BlueskyPublisher):
+            return publisher.publish(text, image=image)
+
         return publisher.publish(text)
 
     def describe(self) -> str:
@@ -470,7 +692,19 @@ class SocialManager:
             f"{labels.get(name, name)} ({modes.get(name, 'off')})"
             for name in self.publishers
         ]
-        return " · ".join(parts) if parts else "off"
+        status = " · ".join(parts) if parts else "off"
+        if self.images_enabled and parts:
+            can_bluesky = "bluesky" in self.publishers
+            can_x = "x" in self.publishers and self.cloudinary is not None
+            if can_x and can_bluesky:
+                status += " · images"
+            elif can_bluesky:
+                status += " · images (Bluesky only)"
+            elif can_x:
+                status += " · images (X only)"
+            else:
+                status += " · images off (X needs Cloudinary)"
+        return status
 
 
 def _main() -> int:
