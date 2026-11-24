@@ -62,7 +62,8 @@ class CardImage:
 
 @lru_cache(maxsize=32)
 def _font(size: int, weight: str = "Regular") -> ImageFont.FreeTypeFont:
-    path = Path(os.getenv("SOCIAL_FONT_PATH", str(DEFAULT_FONT_PATH)))
+    override = os.getenv("SOCIAL_FONT_PATH", "").strip()
+    path = Path(override) if override else DEFAULT_FONT_PATH
     font = ImageFont.truetype(str(path), size)
     try:
         font.set_variation_by_name(weight)
