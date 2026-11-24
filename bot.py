@@ -10,6 +10,7 @@ import asyncio
 import logging
 import os
 import sys
+import time
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
@@ -47,6 +48,13 @@ from formatting import (
     group_embeds,
     release_alert_embed,
     release_summary_embed,
+)
+from social import (
+    SocialManager,
+    load_social_config,
+    release_text,
+    reminder_text,
+    summary_text,
 )
 
 load_dotenv()
@@ -95,6 +103,11 @@ feed = CalendarFeed(ttl_seconds=FEED_TTL_SECONDS)
 service = CalendarService(feed)
 store = ConfigStore()
 state = StateStore()
+social_manager = SocialManager(load_social_config())
+
+# After a social network rejects a post, wait this long before trying the same
+# event/target again instead of retrying every ten seconds.
+SOCIAL_RETRY_SECONDS = 120
 
 
 def _tz(name: str) -> ZoneInfo:
@@ -185,6 +198,11 @@ def _settings_embed(guild: discord.Guild, settings) -> discord.Embed:
         value="on" if settings.release_summary else "off",
         inline=True,
     )
+    embed.add_field(
+        name="Social posts",
+        value=social_manager.describe(),
+        inline=False,
+    )
     embed.set_footer(text="Change these with /setup — e.g. /setup digest:07:30 reminders:15,60")
     return embed
 
@@ -194,9 +212,11 @@ class ForexBot(commands.Bot):
         super().__init__(command_prefix="!", intents=discord.Intents.default())
         self._synced = False
         self._alert_task: asyncio.Task | None = None
+        self._social_cooldowns: dict[str, float] = {}
 
     async def setup_hook(self) -> None:
         await super().setup_hook()
+        log.info("Social publishing: %s", social_manager.describe())
         self._alert_task = asyncio.create_task(self._alert_loop(), name="alerts")
 
     async def on_ready(self) -> None:
@@ -245,6 +265,147 @@ class ForexBot(commands.Bot):
             except Exception:
                 log.exception("Alert check failed")
             await asyncio.sleep(10)
+
+    async def _social_publish(
+        self, kind: str, key: str, text: str
+    ) -> dict[str, str]:
+        """Publish one message to every target that wants this kind.
+
+        Each target is tracked separately, so a failed Bluesky call never
+        suppresses an X post that already succeeded (or the reverse).
+        """
+
+        results: dict[str, str] = {}
+        for target in social_manager.targets_for(kind):
+            state_key = f"social:{target}:{key}"
+            if state.seen(state_key):
+                continue
+
+            if time.monotonic() < self._social_cooldowns.get(state_key, 0.0):
+                results[target] = "retry later"
+                continue
+
+            try:
+                await asyncio.to_thread(social_manager.publish, target, text)
+            except Exception as exc:  # noqa: BLE001 - keep the alert loop alive
+                self._social_cooldowns[state_key] = (
+                    time.monotonic() + SOCIAL_RETRY_SECONDS
+                )
+                log.warning(
+                    "Social post %s to %s failed: %s", key, target, exc
+                )
+                results[target] = f"failed: {exc}"
+                continue
+
+            self._social_cooldowns.pop(state_key, None)
+            state.mark(state_key)
+            log.info("Posted %s to %s", key, target)
+            results[target] = "sent"
+
+        return results
+
+    async def _social_tick(self, now: datetime) -> None:
+        """Post reminders, releases and summaries to Buffer/Bluesky.
+
+        Social settings come from the environment rather than per-guild
+        settings, because one X/Bluesky account serves every Discord server.
+        """
+
+        if not social_manager.active:
+            return
+
+        cfg = social_manager.config
+        tz = _tz(cfg.timezone)
+        local_now = now.astimezone(tz)
+        today = local_now.date()
+        tomorrow = today + timedelta(days=1)
+
+        try:
+            events = await service.events_for_range(today, tomorrow)
+        except Exception:
+            log.exception("Could not load calendar for social posts")
+            return
+
+        candidates = [
+            event
+            for event in events
+            if event.when.astimezone(tz).date() in (today, tomorrow)
+        ]
+        matching = filter_events(candidates, cfg.currencies, cfg.min_impact)
+
+        # Pre-event reminders.
+        for event in matching:
+            for minutes in cfg.reminder_minutes:
+                trigger = event.when - timedelta(minutes=minutes)
+                delta = (now - trigger).total_seconds()
+                if 0 <= delta <= 90:
+                    await self._social_publish(
+                        "reminder",
+                        f"rem:{event.id}:{minutes}",
+                        reminder_text(event, minutes, tz),
+                    )
+
+        # Release-time alert (T-0).
+        for event in matching:
+            delta = (now - event.when).total_seconds()
+            if 0 <= delta <= 90:
+                await self._social_publish(
+                    "release",
+                    f"release:{event.id}",
+                    release_text(event, tz),
+                )
+
+        # Post-release summary with the actual value. Only scrape when at
+        # least one target still needs this event's summary.
+        oldest = RELEASE_SUMMARY_DELAY_SECONDS + RELEASE_SUMMARY_MAX_WAIT_SECONDS
+        for event in matching:
+            elapsed = (now - event.when).total_seconds()
+            if elapsed < RELEASE_SUMMARY_DELAY_SECONDS or elapsed > oldest:
+                continue
+
+            pending = [
+                target
+                for target in social_manager.targets_for("summary")
+                if not state.seen(f"social:{target}:summary:{event.id}")
+            ]
+            if not pending:
+                continue
+
+            actual = _released_actual(event.actual)
+            forecast = event.forecast
+            previous = event.previous
+
+            if not actual:
+                try:
+                    details = await service.event_details(event)
+                except Exception:
+                    log.exception(
+                        "Could not fetch actual for social summary %s",
+                        event.title,
+                    )
+                    details = None
+                if details is not None:
+                    actual = _released_actual(details.actual)
+                    forecast = details.forecast or forecast
+                    previous = details.previous or previous
+
+            if not actual:
+                # Actual not published yet; retry on the next tick.
+                continue
+
+            await self._social_publish(
+                "summary",
+                f"summary:{event.id}",
+                summary_text(
+                    replace(
+                        event,
+                        actual=actual,
+                        forecast=forecast,
+                        previous=previous,
+                    ),
+                    tz,
+                ),
+            )
 
     async def _alert_tick(self) -> None:
         now = discord.utils.utcnow()
@@ -400,6 +561,10 @@ class ForexBot(commands.Bot):
                             log.exception(
                                 "Could not send digest in guild %s", guild.id
                             )
+
+        # Social posts run after Discord so their network latency cannot delay
+        # time-sensitive alerts.
+        await self._social_tick(now)
 
 
 bot = ForexBot()
@@ -660,12 +825,16 @@ TEST_CHOICES = [
 
 
 @tree.command(name="test", description="Send test alerts to the configured channel")
-@app_commands.describe(kind="Which test message(s) to send")
+@app_commands.describe(
+    kind="Which test message(s) to send",
+    social="Also publish the test post(s) to X/Bluesky (public)",
+)
 @app_commands.choices(kind=TEST_CHOICES)
 @app_commands.guild_only()
 async def test_command(
     interaction: discord.Interaction,
     kind: Optional[app_commands.Choice[str]] = None,
+    social: Optional[bool] = None,
 ) -> None:
     # Discord invalidates interaction tokens after 3 seconds; acknowledge first.
     await interaction.response.defer(ephemeral=True, thinking=True)
@@ -724,11 +893,75 @@ async def test_command(
         "release": "release alert",
         "summary": "release summary",
     }
-    await interaction.followup.send(
+
+    social_report: list[str] = []
+    if social:
+        if not social_manager.active:
+            social_report.append(
+                "Social posting is off. Set BUFFER_API_KEY + BUFFER_CHANNEL_ID "
+                "or BLUESKY_HANDLE + BLUESKY_APP_PASSWORD in .env."
+            )
+        else:
+            tz = _tz(social_manager.config.timezone)
+            samples: list[tuple[str, str]] = []
+            if selected in {"all", "reminder"}:
+                samples.append(
+                    ("reminder", reminder_text(base, 15, tz, test=True))
+                )
+            if selected in {"all", "release"}:
+                samples.append(
+                    (
+                        "release",
+                        release_text(replace(base, when=now), tz, test=True),
+                    )
+                )
+            if selected in {"all", "summary"}:
+                samples.append(
+                    (
+                        "summary",
+                        summary_text(
+                            replace(
+                                base,
+                                when=now - timedelta(minutes=2),
+                                actual="0.4%",
+                            ),
+                            tz,
+                            test=True,
+                        ),
+                    )
+                )
+
+            for sample_kind, text in samples:
+                targets = social_manager.targets_for(sample_kind)
+                if not targets:
+                    continue
+                for target in targets:
+                    try:
+                        await asyncio.to_thread(
+                            social_manager.publish, target, text
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        social_report.append(
+                            f"{target} {sample_kind}: failed "
+                            f"({str(exc)[:160]})"
+                        )
+                    else:
+                        social_report.append(f"{target} {sample_kind}: sent")
+
+            if not social_report:
+                social_report.append(
+                    "No social target accepts this message type — check "
+                    "X_POST_MODE and BLUESKY_POST_MODE in .env."
+                )
+
+    message = (
         f"✅ Test message sent to {channel.mention} "
-        f"({kind_labels[selected]}).",
-        ephemeral=True,
+        f"({kind_labels[selected]})."
     )
+    if social_report:
+        message += "\n\n" + "\n".join(f"• {line}" for line in social_report)
+
+    await interaction.followup.send(message[:2000], ephemeral=True)
 
 
 @tree.error
