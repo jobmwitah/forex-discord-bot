@@ -249,9 +249,11 @@ blank line between every line so nothing feels cramped. Images are attached as
 branded cards, so no links are needed: no link-card dependency and no X URL
 surcharge.
 
-Once a day the bot posts a **daily red-news card** with every high-impact event
-for that day. Once a week it posts a **weekly red-news card** covering the next
-seven days. Both use `SOCIAL_TIMEZONE` and can be disabled with `off`.
+Once a day the bot posts a **daily red-news card** with the high-impact events
+still ahead that day. Once a week it posts a **weekly red-news card** covering
+the next seven days. Both use `SOCIAL_TIMEZONE`, run at `00:01` by default so
+they go out before the first release, and can be disabled with `off`. Events
+that have already been released are left off the card.
 
 ### Branded image cards
 
@@ -352,8 +354,8 @@ On macOS, use `launchd` or run it inside `tmux`/`screen` instead.
 | `SOCIAL_MIN_IMPACT` | `high` | Minimum impact for social posts. |
 | `SOCIAL_REMINDER_MINUTES` | `15` | Reminder offsets for social posts. |
 | `SOCIAL_TIMEZONE` | `UTC` | Timezone used in social post times and digest scheduling. |
-| `SOCIAL_DAILY_TIME` | `07:00` | Daily red-news card time (`HH:MM`) or `off`. |
-| `SOCIAL_WEEKLY_TIME` | `07:00` | Weekly red-news card time (`HH:MM`) or `off`. |
+| `SOCIAL_DAILY_TIME` | `00:01` | Daily red-news card time (`HH:MM`) or `off`. Runs before the first release of the day. |
+| `SOCIAL_WEEKLY_TIME` | `00:01` | Weekly red-news card time (`HH:MM`) or `off`. Runs before the first release of the week. |
 | `SOCIAL_WEEKLY_DAY` | `mon` | Weekly card weekday (`mon`..`sun` or `0`..`6`). |
 | `SOCIAL_IMAGES` | `true` | Render branded 2400×1350 cards for social posts. |
 | `SOCIAL_BRAND_NAME` | `Pipwire` | Brand text in the card header/footer. |

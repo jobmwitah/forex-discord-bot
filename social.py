@@ -144,8 +144,8 @@ class SocialConfig:
     currencies: set[str] = field(default_factory=set)
     reminder_minutes: list[int] = field(default_factory=lambda: [15])
     timezone: str = "UTC"
-    daily_time: str = "07:00"
-    weekly_time: str = "07:00"
+    daily_time: str = "00:01"
+    weekly_time: str = "00:01"
     weekly_day: int = 0
     buffer_api_key: str = ""
     buffer_channel_id: str = ""
@@ -186,8 +186,8 @@ def load_social_config() -> SocialConfig:
         currencies=currencies,
         reminder_minutes=_env_minutes("SOCIAL_REMINDER_MINUTES", "15"),
         timezone=stored_tz,
-        daily_time=_env_time("SOCIAL_DAILY_TIME", "07:00"),
-        weekly_time=_env_time("SOCIAL_WEEKLY_TIME", "07:00"),
+        daily_time=_env_time("SOCIAL_DAILY_TIME", "00:01"),
+        weekly_time=_env_time("SOCIAL_WEEKLY_TIME", "00:01"),
         weekly_day=_env_weekday("SOCIAL_WEEKLY_DAY", "mon"),
         buffer_api_key=os.getenv("BUFFER_API_KEY", "").strip(),
         buffer_channel_id=os.getenv("BUFFER_CHANNEL_ID", "").strip(),
@@ -279,13 +279,23 @@ def summary_text(event: Event, tz: ZoneInfo, *, test: bool = False) -> str:
 
 
 def daily_text(
-    events: list[Event], day: date, tz: ZoneInfo, *, test: bool = False
+    events: list[Event],
+    day: date,
+    tz: ZoneInfo,
+    *,
+    test: bool = False,
+    remaining: bool = False,
 ) -> str:
     """A short daily post; the card carries every event and value."""
 
     ordered = sorted(events, key=lambda event: event.when)
     shown = ordered[:5]
-    lines = [f"🔴 {day:%a %d %b} · HIGH-IMPACT DAY"]
+    heading = (
+        "REMAINING HIGH-IMPACT NEWS"
+        if remaining
+        else "HIGH-IMPACT DAY"
+    )
+    lines = [f"🔴 {day:%a %d %b} · {heading}"]
     for event in shown:
         lines.append(
             f"{event.when.astimezone(tz):%H:%M} "
@@ -294,7 +304,7 @@ def daily_text(
     if len(ordered) > len(shown):
         lines.append(f"+{len(ordered) - len(shown)} more on the card")
     if not ordered:
-        lines.append("No high-impact events scheduled.")
+        lines.append("No high-impact events still ahead.")
     lines.append(_digest_tags())
     if test:
         lines.append(_test_suffix(test))
@@ -308,6 +318,7 @@ def weekly_text(
     tz: ZoneInfo,
     *,
     test: bool = False,
+    remaining: bool = False,
 ) -> str:
     """A compact week overview grouped by day; the card lists each event."""
 
@@ -321,6 +332,7 @@ def weekly_text(
     lines = [
         f"🔴 RED NEWS · {start:%d %b} — {end:%d %b} · {total} EVENT"
         + ("" if total == 1 else "S")
+        + (" · REMAINING" if remaining else "")
     ]
     for local_day in sorted(counts):
         count = counts[local_day]
@@ -329,7 +341,7 @@ def weekly_text(
             + ("" if count == 1 else "s")
         )
     if not counts:
-        lines.append("No high-impact events scheduled.")
+        lines.append("No high-impact events still ahead.")
     lines.append(_digest_tags())
     if test:
         lines.append(_test_suffix(test))

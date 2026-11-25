@@ -235,6 +235,7 @@ def _social_digest_card(
     tz: ZoneInfo,
     *,
     test: bool = False,
+    remaining: bool = False,
 ) -> CardImage | None:
     """Render a daily or weekly red-news digest card."""
 
@@ -252,6 +253,7 @@ def _social_digest_card(
                 brand=social_manager.config.brand_name,
                 handle=social_manager.config.brand_handle,
                 test=test,
+                remaining=remaining,
             )
         return renderer(
             events,
@@ -261,6 +263,7 @@ def _social_digest_card(
             brand=social_manager.config.brand_name,
             handle=social_manager.config.brand_handle,
             test=test,
+            remaining=remaining,
         )
     except Exception as exc:  # noqa: BLE001 - text-only fallback
         log.warning("Could not render %s social card: %s", kind, exc)
@@ -460,11 +463,29 @@ class ForexBot(commands.Bot):
             cfg.currencies,
             "high",
         )
+        remaining_events = [
+            event for event in todays if event.when > now
+        ]
+        if not remaining_events:
+            return
+        is_remaining = len(remaining_events) < len(todays)
+
         card = await asyncio.to_thread(
-            _social_digest_card, "daily", todays, today, today, tz
+            _social_digest_card,
+            "daily",
+            remaining_events,
+            today,
+            today,
+            tz,
+            remaining=is_remaining,
         )
         await self._social_publish(
-            "daily", key, daily_text(todays, today, tz), card
+            "daily",
+            key,
+            daily_text(
+                remaining_events, today, tz, remaining=is_remaining
+            ),
+            card,
         )
 
     async def _social_weekly_digest(
@@ -503,11 +524,27 @@ class ForexBot(commands.Bot):
             cfg.currencies,
             "high",
         )
+        remaining_events = [event for event in highs if event.when > now]
+        if not remaining_events:
+            return
+        is_remaining = len(remaining_events) < len(highs)
+
         card = await asyncio.to_thread(
-            _social_digest_card, "weekly", highs, today, end, tz
+            _social_digest_card,
+            "weekly",
+            remaining_events,
+            today,
+            end,
+            tz,
+            remaining=is_remaining,
         )
         await self._social_publish(
-            "weekly", key, weekly_text(highs, today, end, tz), card
+            "weekly",
+            key,
+            weekly_text(
+                remaining_events, today, end, tz, remaining=is_remaining
+            ),
+            card,
         )
 
     async def _social_tick(self, now: datetime) -> None:

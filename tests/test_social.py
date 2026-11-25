@@ -80,6 +80,13 @@ class FormattingTests(unittest.TestCase):
         self.assertEqual(text.count("Test event"), 5)
         self.assertLessEqual(len(text), social.X_LIMIT)
 
+    def test_daily_text_marks_remaining_news(self) -> None:
+        text = social.daily_text(
+            [self.event], self.event.when.date(), ZoneInfo("UTC"), remaining=True
+        )
+        self.assertIn("REMAINING HIGH-IMPACT NEWS", text)
+        self.assertNotIn("HIGH-IMPACT DAY", text)
+
     def test_weekly_text_groups_events_by_day(self) -> None:
         events = [
             replace(self.event, id="w1"),
@@ -95,6 +102,16 @@ class FormattingTests(unittest.TestCase):
         self.assertIn("Tue 24 Nov · 1 event", text)
         self.assertIn("Wed 25 Nov · 1 event", text)
         self.assertLessEqual(len(text), social.X_LIMIT)
+
+    def test_weekly_text_marks_remaining_news(self) -> None:
+        text = social.weekly_text(
+            [self.event],
+            self.event.when.date(),
+            (self.event.when + timedelta(days=6)).date(),
+            ZoneInfo("UTC"),
+            remaining=True,
+        )
+        self.assertIn("· REMAINING", text)
 
     def test_clip_never_exceeds_limit(self) -> None:
         clipped = social._clip("x" * 100, 20)
@@ -141,8 +158,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cfg.bluesky_mode, "all")
         self.assertEqual(cfg.reminder_minutes, [15])
         self.assertEqual(cfg.min_impact, "high")
-        self.assertEqual(cfg.daily_time, "07:00")
-        self.assertEqual(cfg.weekly_time, "07:00")
+        self.assertEqual(cfg.daily_time, "00:01")
+        self.assertEqual(cfg.weekly_time, "00:01")
         self.assertEqual(cfg.weekly_day, 0)
         self.assertTrue(cfg.images_enabled)
         self.assertEqual(cfg.brand_name, "Pipwire")
@@ -477,6 +494,27 @@ class GraphicsTests(unittest.TestCase):
         self.assertIn("daily red-news", card.alt)
         self.assertIn("High impact event 0", card.alt)
 
+    def test_remaining_digest_cards_mark_alt_text(self) -> None:
+        from graphics import render_daily_card, render_weekly_card
+
+        day = datetime(2026, 11, 25, tzinfo=timezone.utc).date()
+        event = _event(
+            "r1", datetime(2026, 11, 25, 13, 30, tzinfo=timezone.utc)
+        )
+        daily = render_daily_card(
+            [event], day, ZoneInfo("UTC"), remaining=True
+        )
+        self.assertIn("remaining daily red-news", daily.alt)
+
+        weekly = render_weekly_card(
+            [event],
+            day,
+            day + timedelta(days=6),
+            ZoneInfo("UTC"),
+            remaining=True,
+        )
+        self.assertIn("weekly red-news", weekly.alt)
+
     def test_weekly_digest_card_handles_many_events(self) -> None:
         from graphics import render_weekly_card
 
@@ -648,6 +686,58 @@ class AlertTickTests(unittest.IsolatedAsyncioTestCase):
         daily_posts = [post for post in manager.posts if "HIGH-IMPACT DAY" in post[1]]
         self.assertEqual(len(daily_posts), 2)
         self.assertEqual({target for target, _ in daily_posts}, {"x", "bluesky"})
+
+    async def test_daily_digest_only_includes_unreleased_events(self) -> None:
+        now = datetime(2026, 11, 25, 8, 0, tzinfo=timezone.utc)
+        events = [
+            _event(
+                "released",
+                datetime(2026, 11, 25, 0, 30, tzinfo=timezone.utc),
+                currency="AUD",
+            ),
+            _event(
+                "ahead",
+                datetime(2026, 11, 25, 13, 30, tzinfo=timezone.utc),
+            ),
+        ]
+        manager = FakeManager()
+        manager.config.daily_time = "08:00"
+        manager.config.weekly_time = "off"
+
+        with (
+            mock.patch.object(bot_module, "social_manager", manager),
+            mock.patch.object(bot_module, "service", FakeService(events)),
+            mock.patch.object(bot_module, "state", FakeState()),
+        ):
+            instance = bot_module.ForexBot()
+            await instance._social_tick(now)
+
+        daily_posts = [post for post in manager.posts if "REMAINING" in post[1]]
+        self.assertEqual(len(daily_posts), 2)
+        self.assertIn("Test event ahead", daily_posts[0][1])
+        self.assertNotIn("Test event released", daily_posts[0][1])
+
+    async def test_daily_digest_is_skipped_when_everything_released(self) -> None:
+        now = datetime(2026, 11, 25, 18, 0, tzinfo=timezone.utc)
+        events = [
+            _event(
+                "released",
+                datetime(2026, 11, 25, 13, 30, tzinfo=timezone.utc),
+            )
+        ]
+        manager = FakeManager()
+        manager.config.daily_time = "18:00"
+        manager.config.weekly_time = "off"
+
+        with (
+            mock.patch.object(bot_module, "social_manager", manager),
+            mock.patch.object(bot_module, "service", FakeService(events)),
+            mock.patch.object(bot_module, "state", FakeState()),
+        ):
+            instance = bot_module.ForexBot()
+            await instance._social_tick(now)
+
+        self.assertEqual(manager.posts, [])
 
     async def test_tick_posts_weekly_digest_on_configured_day(self) -> None:
         now = datetime(2026, 11, 30, 7, 0, tzinfo=timezone.utc)

@@ -568,39 +568,39 @@ def _digest_heading(
     subtitle_text = _ellipsize(
         draw,
         subtitle.upper(),
-        _font(16, "Medium"),
+        _font(18, "Medium"),
         780,
         tracking=0.4,
     )
     draw.text(
-        (64, 218),
+        (64, 216),
         subtitle_text,
-        font=_font(16, "Medium"),
+        font=_font(18, "Medium"),
         fill=BODY,
     )
 
     # Large charcoal event-count block on the right.
     draw.rounded_rectangle([930, 130, 1136, 232], radius=20, fill=CHARCOAL)
     count_text = f"{min(count, 99):02d}" if count < 100 else "99+"
-    count_font = _font(54, "ExtraBold")
+    count_font = _font(62, "ExtraBold")
     count_width = _text_width(draw, count_text, count_font)
     draw.text(
-        (930 + (206 - count_width) / 2, 146),
+        (930 + (206 - count_width) / 2, 142),
         count_text,
         font=count_font,
         fill=WHITE,
     )
     event_label = "EVENT" if count == 1 else "EVENTS"
     label_width = _tracked_width(
-        draw, event_label, _font(11, "Bold"), 11 * 0.18
+        draw, event_label, _font(12, "Bold"), 12 * 0.18
     )
     _draw_tracked(
         draw,
-        (930 + (206 - label_width) / 2, 207),
+        (930 + (206 - label_width) / 2, 208),
         event_label,
-        _font(11, "Bold"),
+        _font(12, "Bold"),
         TEAL_BRIGHT,
-        11 * 0.18,
+        12 * 0.18,
     )
 
     draw.line([(64, 252), (WIDTH - 64, 252)], fill=LINE, width=1)
@@ -627,37 +627,60 @@ def _digest_row(
         width=1,
     )
     draw.rounded_rectangle(
-        [left, top, left + 5, top + height],
+        [left, top, left + 6, top + height],
         radius=2,
         fill=RED,
     )
 
     pad = 16 if compact else 20
-    day_width = 66 if show_day else 0
-    time_width = 0 if show_day else 58
-    badge_width = 48 if compact else 56
-    badge_height = 26 if compact else 30
-    badge_font = _font(12 if compact else 14, "ExtraBold")
-    title_font = _font(14 if compact else 19, "SemiBold")
-    values_width = 158 if show_values else 0
+
+    if compact:
+        time_size = max(17, min(26, int(height * 0.36)))
+        title_size = max(15, min(23, int(height * 0.33)))
+        badge_height = max(26, min(38, int(height * 0.52)))
+        badge_font_size = max(12, min(16, int(badge_height * 0.46)))
+    else:
+        time_size = max(22, min(40, int(height * 0.42)))
+        title_size = max(19, min(36, int(height * 0.38)))
+        badge_height = max(34, min(52, int(height * 0.58)))
+        badge_font_size = max(15, min(22, int(badge_height * 0.46)))
+
+    time_width = max(76, int(time_size * 3.0))
+    day_width = time_width if show_day else 0
+    if show_day:
+        time_width = 0
+
+    badge_width = int(badge_height * 1.75)
+    badge_font = _font(badge_font_size, "ExtraBold")
+    title_font = _font(title_size, "SemiBold")
+
+    values = []
+    if show_values:
+        if event.actual and event.actual.strip():
+            values.append(("A", event.actual.strip()))
+        if event.forecast and event.forecast.strip():
+            values.append(("F", event.forecast.strip()))
+        if event.previous and event.previous.strip():
+            values.append(("P", event.previous.strip()))
+    values_width = 220 if values else 0
 
     local_when = event.when.astimezone(tz)
     if show_day:
         _draw_tracked(
             draw,
-            (left + pad, top + height / 2 - 19),
+            (left + pad, top + height / 2 - 22),
             local_when.strftime("%a %d").upper(),
-            _font(10, "Bold"),
+            _font(11, "Bold"),
             MUTED_DARK,
-            10 * 0.12,
+            11 * 0.12,
         )
         _draw_vcentered(
             draw,
             left + pad,
-            top + height / 2 - 2,
+            top + height / 2 - 4,
             height / 2,
             local_when.strftime("%H:%M"),
-            _font(18, "Bold"),
+            _font(time_size, "Bold"),
             INK,
         )
     else:
@@ -667,7 +690,7 @@ def _digest_row(
             top,
             height,
             local_when.strftime("%H:%M"),
-            _font(20 if not compact else 17, "Bold"),
+            _font(time_size, "Bold"),
             INK,
         )
 
@@ -699,30 +722,38 @@ def _digest_row(
         draw.text((title_x, title_y), line, font=title_font, fill=INK)
         title_y += title_height
 
-    if show_values:
-        values = [
-            ("F", event.forecast),
-            ("P", event.previous),
-        ]
-        if event.actual and event.actual.strip():
-            values.insert(0, ("A", event.actual))
-        values = [(label, value.strip()) for label, value in values if value and value.strip()]
-        if values:
-            value_font = _font(12, "Medium")
-            line_height = 14
-            block_height = len(values) * line_height
-            value_y = top + (height - block_height) / 2
-            right = left + width - pad
-            for label, value in values:
-                _draw_right(
-                    draw,
-                    right,
-                    value_y,
-                    f"{label} {value}",
-                    value_font,
-                    MUTED_DARK,
-                )
-                value_y += line_height
+    if values:
+        right = left + width - pad
+        if len(values) == 3 and height < 56:
+            # A tight row gets one compact line instead of three.
+            _draw_vcentered(
+                draw,
+                left + width - values_width,
+                top,
+                height,
+                " · ".join(f"{label} {value}" for label, value in values),
+                _font(13, "Medium"),
+                MUTED_DARK,
+            )
+            return
+
+        value_size = max(16, min(28, int(height * 0.30)))
+        if len(values) == 3:
+            value_size = min(value_size, 18)
+        line_height = value_size + 3
+        block_height = len(values) * line_height
+        value_y = top + (height - block_height) / 2
+        value_font = _font(value_size, "Medium")
+        for label, value in values:
+            _draw_right(
+                draw,
+                right,
+                value_y,
+                f"{label} {value}",
+                value_font,
+                MUTED_DARK,
+            )
+            value_y += line_height
 
 
 def _render_digest(
@@ -738,6 +769,7 @@ def _render_digest(
     test: bool,
     show_day: bool,
     alt_label: str,
+    remaining: bool = False,
 ) -> CardImage:
     ordered = sorted(events, key=lambda event: event.when)
     image = _background()
@@ -753,18 +785,18 @@ def _render_digest(
         tz.key or "UTC",
     )
 
-    top = 270
-    bottom = 592
+    top = 260
+    bottom = 594
     available = bottom - top
-    if len(ordered) <= 6:
+    if len(ordered) <= 5:
         columns = 1
-    elif len(ordered) <= 12:
+    elif len(ordered) <= 10:
         columns = 2
     else:
         columns = 3
 
     gap_x = 20
-    gap_y = 10 if len(ordered) <= 6 else 8
+    gap_y = 8
     col_width = (WIDTH - 128 - gap_x * (columns - 1)) / columns
     max_rows = max(1, int((available + gap_y) // (38 + gap_y)))
     max_events = max_rows * columns
@@ -772,8 +804,18 @@ def _render_digest(
     truncated = len(ordered) - len(shown)
 
     rows = max(1, (len(shown) + columns - 1) // columns)
+    if rows == 1:
+        max_row_height = 120
+    elif rows == 2:
+        max_row_height = 108
+    elif rows == 3:
+        max_row_height = 92
+    elif rows <= 5:
+        max_row_height = 78
+    else:
+        max_row_height = 60
     row_height = min(
-        66, (available - gap_y * (rows - 1)) / rows
+        max_row_height, (available - gap_y * (rows - 1)) / rows
     )
     row_height = max(38, row_height)
     block_height = rows * row_height + gap_y * (rows - 1)
@@ -792,7 +834,9 @@ def _render_digest(
             64,
             top,
             bottom - top,
-            "No high-impact events scheduled.",
+            "No high-impact events still ahead."
+            if remaining
+            else "No high-impact events scheduled.",
             _font(24, "Medium"),
             MUTED_DARK,
         )
@@ -819,7 +863,7 @@ def _render_digest(
         _draw_right(
             draw,
             WIDTH - 64,
-            592,
+            236,
             f"+{truncated} more",
             _font(12, "Bold"),
             RED,
@@ -1122,22 +1166,37 @@ def render_daily_card(
     brand: str = "Pipwire",
     handle: str = "",
     test: bool = False,
+    remaining: bool = False,
 ) -> CardImage:
     """Render the day's high-impact (red-news) calendar overview."""
 
+    event_word = "event" if len(events) == 1 else "events"
+    if remaining:
+        eyebrow = "Pipwire · Red news ahead"
+        title = "Remaining red news"
+        subtitle = f"{day:%A %d %B %Y} · {len(events)} {event_word} still ahead"
+        alt_label = (
+            f"remaining daily red-news calendar for {day:%A %d %B %Y}"
+        )
+    else:
+        eyebrow = "Pipwire · Red news"
+        title = "Today's red news"
+        subtitle = f"{day:%A %d %B %Y} · {len(events)} high-impact {event_word}"
+        alt_label = f"daily red-news calendar for {day:%A %d %B %Y}"
+
     return _render_digest(
         events,
-        eyebrow="Pipwire · Red news",
-        title="Today's red news",
-        subtitle=f"{day:%A %d %B %Y} · {len(events)} high-impact event"
-        + ("" if len(events) == 1 else "s"),
-        right_label="HIGH IMPACT",
+        eyebrow=eyebrow,
+        title=title,
+        subtitle=subtitle,
+        right_label="STILL AHEAD" if remaining else "HIGH IMPACT",
         tz=tz,
         brand=brand,
         handle=handle,
         test=test,
         show_day=False,
-        alt_label=f"daily red-news calendar for {day:%A %d %B %Y}",
+        alt_label=alt_label,
+        remaining=remaining,
     )
 
 
@@ -1150,20 +1209,29 @@ def render_weekly_card(
     brand: str = "Pipwire",
     handle: str = "",
     test: bool = False,
+    remaining: bool = False,
 ) -> CardImage:
     """Render the next seven days of high-impact events."""
+
+    event_word = "event" if len(events) == 1 else "events"
+    subtitle = (
+        f"{start:%d %b} — {end:%d %b %Y} · {len(events)} high-impact {event_word}"
+    )
+    if remaining:
+        subtitle += " · remaining"
+    alt_label = f"weekly red-news calendar for {start:%d %B} to {end:%d %B %Y}"
 
     return _render_digest(
         events,
         eyebrow="Pipwire · Week ahead",
         title="Weekly red news",
-        subtitle=f"{start:%d %b} — {end:%d %b %Y} · {len(events)} high-impact event"
-        + ("" if len(events) == 1 else "s"),
+        subtitle=subtitle,
         right_label="WEEK AHEAD",
         tz=tz,
         brand=brand,
         handle=handle,
         test=test,
         show_day=True,
-        alt_label=f"weekly red-news calendar for {start:%d %B} to {end:%d %B %Y}",
+        alt_label=alt_label,
+        remaining=remaining,
     )
