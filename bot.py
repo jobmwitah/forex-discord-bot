@@ -279,6 +279,18 @@ class ForexBot(commands.Bot):
         except Exception:
             log.exception("Slash command sync failed")
 
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        """Re-register slash commands after a kick and re-invite."""
+
+        try:
+            self.tree.copy_global_to(guild=guild)
+            synced = await self.tree.sync(guild=guild)
+            log.info(
+                "Synced %d slash command(s) to %s", len(synced), guild.name
+            )
+        except Exception:
+            log.exception("Slash command sync failed for %s", guild.name)
+
     async def channel_for(self, guild: discord.Guild, settings):
         channel_id = settings.alert_channel_id or _env_channel_id()
         if not channel_id:
