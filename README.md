@@ -159,7 +159,7 @@ e.g. `/test kind:release` or `/test kind:summary`.
 | `/pairs` | List supported majors/crosses and explain pair filtering. |
 | `/settings` | Show this server's alert configuration (ephemeral). |
 | `/setup ...` | Change channel, currencies, impact threshold, digest time, reminders, timezone, release alert/summary toggles, enabled. Requires **Manage Server**. |
-| `/test [kind]` | Send a test message to the configured channel. `kind` can be `all`, `reminder`, `release` or `summary`. |
+| `/test [kind] [social]` | Send a test message to the configured channel. `kind` can be `all`, `reminder`, `release` or `summary`; `social:true` also posts to X/Bluesky. |
 
 ### Pair filtering
 
@@ -190,6 +190,91 @@ currency directly, use `currencies:USD,EUR` or `currencies:all`.
   bot will not repeat messages that were already delivered.
 - The daily digest is scheduled in the server's configured timezone, but the
   times inside the embed render in each member's own timezone.
+
+## Free social posting (optional)
+
+The bot can also post calendar alerts to **X (Twitter)** and **Bluesky** for
+free. X's own API is pay-per-use ($0.015 per text post, $0.20 if it contains a
+URL), so X posting goes through **Buffer's free plan** instead. Buffer owns the X
+connection and exposes a free GraphQL API. Bluesky is posted to directly through
+its free AT Protocol API.
+
+Both targets are optional. If the environment variables are missing, the bot
+runs exactly as before and only posts to Discord.
+
+### Setup
+
+1. Create the X account and connect it to Buffer (free plan) at
+   <https://buffer.com>. Buffer Free includes 3 channels, 10 queued posts per
+   channel, and 1,000 API requests per channel every 30 days.
+2. Create an API key at <https://publish.buffer.com/settings/api>.
+3. Put the key in `.env` as `BUFFER_API_KEY`, then list your channel IDs:
+
+   ```bash
+   .venv/bin/python social.py --channels
+   ```
+
+   Copy the X channel's `id` into `BUFFER_CHANNEL_ID`.
+4. For Bluesky, create a free account and an **App Password** (Settings → App
+   Passwords). Add `BLUESKY_HANDLE` (e.g. `yourname.bsky.social`) and
+   `BLUESKY_APP_PASSWORD`. Never use your main Bluesky password.
+5. Optional but recommended: create a free Cloudinary account at
+   <https://cloudinary.com> and set `CLOUDINARY_CLOUD_NAME`,
+   `CLOUDINARY_API_KEY` and `CLOUDINARY_API_SECRET` from its dashboard. Buffer
+   has no file-upload API, so X cards are attached as a public Cloudinary URL.
+   Bluesky uploads image bytes directly and does not need Cloudinary.
+6. Protect the file and restart:
+
+   ```bash
+   chmod 600 .env
+   sudo systemctl restart forex-bot
+   ```
+
+7. Verify with `/test social:true`. This posts a public test message and a
+   branded card to each configured target that accepts that message type.
+
+### What gets posted
+
+`X_POST_MODE` and `BLUESKY_POST_MODE` control each target independently:
+`off`, `reminder`, `release`, `summary`, or `all`.
+
+The defaults are deliberately conservative:
+
+- **X**: `reminder` — one pre-event post per event, which keeps Buffer's free
+  request quota comfortable.
+- **Bluesky**: `all` — reminder, release and post-release summary.
+
+Posts include the event time, forecast/previous values and hashtags. Images are
+attached as branded cards, so no links are needed: no link-card dependency and
+no X URL surcharge.
+
+### Branded image cards
+
+Every social post includes a deterministic **1200×675** card rendered locally
+with Pillow. The cards use the Pipwire palette (light-gray post background,
+charcoal number badges, teal accents, soft red for high-impact labels) and the
+event title, impact badge, currency, time, and forecast/previous/actual values.
+No AI image service is involved, so the numbers are exact and each card takes
+well under a second to render.
+
+- The bundled font is `assets/fonts/Inter-Variable.ttf` (SIL OFL licence in
+  `assets/fonts/OFL.txt`).
+- PNG is used by default; the renderer falls back to JPEG quality 90 if a card
+  exceeds Bluesky's 1 MB blob limit.
+- `SOCIAL_BRAND_NAME` and `SOCIAL_BRAND_HANDLE` set the header and footer text.
+- `SOCIAL_IMAGES=false` turns cards off and posts text only.
+
+Image failures never suppress an alert: if rendering fails, Cloudinary is
+unavailable, or Bluesky rejects the blob, the text post is still published.
+X cards require all three `CLOUDINARY_*` variables; Bluesky cards work without
+them.
+
+Social posting is global (one X/Bluesky account for every Discord server) and is
+deduplicated in `data/state.json`, so restarts do not repeat posts. Failed posts
+are retried at most every two minutes.
+
+> **Do not** use unofficial X libraries, browser automation, or scrapers to avoid
+> the API fee. They violate X's terms and can get the account banned.
 
 ## Running the bot long-term on Linux
 
@@ -248,6 +333,24 @@ On macOS, use `launchd` or run it inside `tmux`/`screen` instead.
 | `RELEASE_SUMMARY_DELAY_SECONDS` | `30` | Wait after release before fetching the actual value. |
 | `RELEASE_SUMMARY_MAX_WAIT_SECONDS` | `900` | Keep retrying for the actual value for this long. |
 | `FEED_TTL_SECONDS` | `600` | Calendar feed cache duration. |
+| `BUFFER_API_KEY` | empty | Buffer API key; enables X posting when set with the channel ID. |
+| `BUFFER_CHANNEL_ID` | empty | Buffer channel ID for the X account. |
+| `X_POST_MODE` | `reminder` | X posts: `off`, `reminder`, `release`, `summary`, `all`. |
+| `BLUESKY_HANDLE` | empty | Bluesky handle, e.g. `name.bsky.social`. |
+| `BLUESKY_APP_PASSWORD` | empty | Bluesky app password (not the main password). |
+| `BLUESKY_PDS` | `https://bsky.social` | Bluesky PDS endpoint. |
+| `BLUESKY_POST_MODE` | `all` | Bluesky posts: `off`, `reminder`, `release`, `summary`, `all`. |
+| `SOCIAL_CURRENCIES` | empty (all) | Currency filter for social posts. |
+| `SOCIAL_MIN_IMPACT` | `high` | Minimum impact for social posts. |
+| `SOCIAL_REMINDER_MINUTES` | `15` | Reminder offsets for social posts. |
+| `SOCIAL_TIMEZONE` | `UTC` | Timezone used in social post times. |
+| `SOCIAL_IMAGES` | `true` | Render branded 1200×675 cards for social posts. |
+| `SOCIAL_BRAND_NAME` | `Pipwire` | Brand text in the card header/footer. |
+| `SOCIAL_BRAND_HANDLE` | empty | Optional handle shown next to the brand. |
+| `SOCIAL_FONT_PATH` | bundled Inter | Override the card font file. |
+| `CLOUDINARY_CLOUD_NAME` | empty | Cloudinary cloud name for X image hosting. |
+| `CLOUDINARY_API_KEY` | empty | Cloudinary API key. |
+| `CLOUDINARY_API_SECRET` | empty | Cloudinary API secret (never commit or print). |
 
 Per-server settings are stored in `data/settings.json`.
 
@@ -260,6 +363,9 @@ forex-discord-bot/
 ├── html_parser.py       # HTML fallback parser (BeautifulSoup only)
 ├── config.py            # env defaults + per-guild JSON settings/state
 ├── formatting.py        # Discord embeds, impact styling, release summaries
+├── graphics.py          # branded 1200x675 social cards (Pillow)
+├── social.py            # free X (Buffer) and Bluesky posting + CLI helper
+├── assets/fonts/        # bundled Inter variable font + OFL licence
 ├── requirements.txt
 ├── .env.example
 └── run.bat              # Windows launcher (Linux: use systemd, see above)
