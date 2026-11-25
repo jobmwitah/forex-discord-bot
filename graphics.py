@@ -58,7 +58,7 @@ IMPACT_LABELS = {
     "holiday": "HOLIDAY",
 }
 
-TITLE_TRACKING = 0.18  # em
+TITLE_TRACKING = 0.20  # em
 LABEL_TRACKING = 0.20  # em
 
 
@@ -390,7 +390,7 @@ def render_card(
     badge = [64, 150, 168, 254]
     draw.rounded_rectangle(badge, radius=26, fill=CHARCOAL)
     draw.rounded_rectangle([98, 242, 134, 247], radius=2, fill=TEAL_BRIGHT)
-    currency_font = _font(40, "Black")
+    currency_font = _font(40, "ExtraBold")
     currency_box = draw.textbbox((0, 0), event.currency, font=currency_font)
     currency_x = badge[0] + (badge[2] - badge[0] - (currency_box[2] - currency_box[0])) / 2
     currency_y = badge[1] + (badge[3] - badge[1] - (currency_box[3] - currency_box[1])) / 2 - 2
