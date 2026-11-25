@@ -427,7 +427,7 @@ def render_card(
         )
 
     title_bottom = title_top + max(1, len(title_lines)) * title_line_height
-    time_top = max(358, title_bottom + 14)
+    time_top = max(258, title_bottom + 16)
     time_font = _font(19, "Medium")
     when = event.when.astimezone(tz).strftime("%a %d %b %Y · %H:%M %Z")
     draw.text((title_x, time_top), when, font=time_font, fill=BODY)
@@ -452,11 +452,13 @@ def render_card(
         status_tracking,
     )
 
-    # Three panel-white value cards with charcoal number badges.
-    card_top = 432
-    card_height = 132
+    # Three panel-white value cards with large charcoal number badges. The row
+    # uses the full width and all the space between the time and footer.
+    card_top = max(330, time_top + 58)
+    card_bottom = 592
+    card_height = card_bottom - card_top
     card_width = 340
-    gap = 30
+    gap = 26
     labels = ("FORECAST", "PREVIOUS", "ACTUAL")
     values = (
         _value_or_dash(event.forecast),
@@ -479,40 +481,45 @@ def render_card(
             draw,
             (left + 24, card_top + 20),
             label,
-            _font(12, "SemiBold"),
+            _font(13, "SemiBold"),
             MUTED_DARK,
-            12 * LABEL_TRACKING,
+            13 * LABEL_TRACKING,
         )
 
-        value_font = _font(28, "Bold")
-        shown = _ellipsize(
-            draw, value, value_font, card_width - 76, tracking=0.4
-        )
-        badge_width = int(_tracked_width(draw, shown, value_font, 0.4)) + 36
-        badge_width = min(badge_width, card_width - 48)
-        badge_height = 54
+        badge_left = left + 20
+        badge_width = card_width - 40
+        content_top = card_top + 52
+        content_bottom = card_bottom - 22
+        available = content_bottom - content_top
+        badge_height = max(96, min(156, available))
+        badge_top = content_top + (available - badge_height) // 2
         badge_fill = (
             actual_colour
             if index == 2 and kind == "summary" and event.actual
             else CHARCOAL
         )
         draw.rounded_rectangle(
-            [
-                left + 24,
-                card_top + 58,
-                left + 24 + badge_width,
-                card_top + 58 + badge_height,
-            ],
-            radius=15,
+            [badge_left, badge_top, badge_left + badge_width, badge_top + badge_height],
+            radius=18,
             fill=badge_fill,
         )
-        badge_box = draw.textbbox((0, 0), shown, font=value_font)
-        badge_text_y = (
-            card_top + 58 + (badge_height - (badge_box[3] - badge_box[1])) / 2 - 3
-        )
+
+        max_value_width = badge_width - 48
+        value_font = _font(40, "Bold")
+        for size in (72, 68, 64, 60, 56, 52, 48, 44, 40):
+            candidate = _font(size, "Bold")
+            if _tracked_width(draw, value, candidate, 0.4) <= max_value_width:
+                value_font = candidate
+                break
+        shown = _ellipsize(draw, value, value_font, max_value_width, tracking=0.4)
+        text_width = _tracked_width(draw, shown, value_font, 0.4)
+        text_x = badge_left + (badge_width - text_width) / 2
+        text_box = draw.textbbox((0, 0), shown, font=value_font)
+        text_height = text_box[3] - text_box[1]
+        text_y = badge_top + (badge_height - text_height) / 2 - text_box[1]
         _draw_tracked(
             draw,
-            (left + 42, badge_text_y),
+            (text_x, text_y),
             shown,
             value_font,
             WHITE,
