@@ -14,6 +14,7 @@ from __future__ import annotations
 import io
 import os
 from dataclasses import dataclass
+from datetime import date
 from functools import lru_cache
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -378,6 +379,489 @@ def _fit_title(
     return chosen_lines, chosen_font, int(chosen_tracking)
 
 
+def _draw_badge(
+    draw: ImageDraw.ImageDraw,
+    left: float,
+    top: float,
+    width: float,
+    height: float,
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    fill: tuple[int, int, int],
+    text_fill: tuple[int, int, int] = WHITE,
+    tracking: float = 0.0,
+) -> None:
+    draw.rounded_rectangle(
+        [left, top, left + width, top + height],
+        radius=min(14, height / 2),
+        fill=fill,
+    )
+    text_width = _tracked_width(draw, text, font, tracking)
+    box = font.getbbox(text)
+    text_height = (box[3] - box[1]) / RENDER_SCALE
+    x = left + (width - text_width) / 2
+    y = top + (height - text_height) / 2 - box[1] / RENDER_SCALE
+    _draw_tracked(draw, (x, y), text, font, text_fill, tracking)
+
+
+def _draw_vcentered(
+    draw: ImageDraw.ImageDraw,
+    x: float,
+    top: float,
+    height: float,
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    fill: tuple[int, int, int],
+    tracking: float = 0.0,
+) -> None:
+    box = font.getbbox(text)
+    text_height = (box[3] - box[1]) / RENDER_SCALE
+    y = top + (height - text_height) / 2 - box[1] / RENDER_SCALE
+    _draw_tracked(draw, (x, y), text, font, fill, tracking)
+
+
+def _draw_right(
+    draw: ImageDraw.ImageDraw,
+    right: float,
+    top: float,
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    fill: tuple[int, int, int],
+) -> None:
+    width = _text_width(draw, text, font)
+    draw.text((right - width, top), text, font=font, fill=fill)
+
+
+def _digest_header(
+    draw: ImageDraw.ImageDraw,
+    brand: str,
+    test: bool,
+    label: str,
+) -> None:
+    draw.rectangle([0, 0, WIDTH, 100], fill=DARK_BANNER)
+    draw.rectangle([0, 100, WIDTH, 103], fill=TEAL_BRIGHT)
+
+    brand_text = brand.upper()
+    draw.rounded_rectangle([64, 28, 76, 40], radius=2, fill=TEAL_BRIGHT)
+    brand_font = _font(26, "ExtraBold")
+    brand_width = _draw_tracked(
+        draw, (88, 22), brand_text, brand_font, WHITE, 3.0
+    )
+    draw.text(
+        (88, 57),
+        "ECONOMIC CALENDAR",
+        font=_font(12, "SemiBold"),
+        fill=TEAL_BRIGHT,
+    )
+    if test:
+        _pill(
+            draw,
+            int(brand_width) + 18,
+            30,
+            "TEST",
+            _font(12, "Bold"),
+            RED,
+            WHITE,
+            12,
+            28,
+            1.2,
+        )
+
+    label_font = _font(13, "Bold")
+    label_tracking = 13 * 0.14
+    label_width = int(
+        _tracked_width(draw, label, label_font, label_tracking)
+    ) + 36
+    draw.rounded_rectangle(
+        [WIDTH - 64 - label_width, 30, WIDTH - 64, 70],
+        radius=20,
+        fill=RED,
+    )
+    _draw_tracked(
+        draw,
+        (WIDTH - 64 - label_width + 18, 41),
+        label,
+        label_font,
+        WHITE,
+        label_tracking,
+    )
+
+
+def _digest_footer(
+    draw: ImageDraw.ImageDraw,
+    brand: str,
+    handle: str,
+    tz_label: str,
+) -> None:
+    draw.line([(64, 606), (WIDTH - 64, 606)], fill=LINE, width=1)
+
+    footer_font = _font(14, "ExtraBold")
+    footer_brand = brand.upper()
+    footer_tracking = 14 * 0.12
+    footer_width = int(
+        _tracked_width(draw, footer_brand, footer_font, footer_tracking)
+    )
+    handle_font = _font(14, "Medium")
+    handle_width = (
+        int(_text_width(draw, handle, handle_font)) + 14 if handle else 0
+    )
+    pill_width = footer_width + handle_width + 36
+    draw.rounded_rectangle(
+        [64, 618, 64 + pill_width, 650],
+        radius=16,
+        fill=FOOTER_PILL,
+        outline=LINE,
+        width=1,
+    )
+    _draw_tracked(
+        draw,
+        (82, 626),
+        footer_brand,
+        footer_font,
+        INK,
+        footer_tracking,
+    )
+    if handle:
+        draw.text(
+            (82 + footer_width + 14, 626),
+            handle,
+            font=handle_font,
+            fill=TEAL,
+        )
+
+    note = f"Times in {tz_label} · ForexFactory data"
+    note_font = _font(12, "Regular")
+    _draw_right(draw, WIDTH - 64, 628, note, note_font, MUTED)
+
+
+def _digest_heading(
+    draw: ImageDraw.ImageDraw,
+    eyebrow: str,
+    title: str,
+    subtitle: str,
+    count: int,
+    tz_label: str,
+) -> None:
+    _draw_tracked(
+        draw,
+        (64, 130),
+        eyebrow.upper(),
+        _font(12, "Bold"),
+        TEAL,
+        12 * LABEL_TRACKING,
+    )
+
+    lines, title_font, title_tracking = _fit_title(
+        draw, title.upper(), 780, 1
+    )
+    line_height = int((title_font.size / RENDER_SCALE) * 1.12)
+    for offset, line in enumerate(lines):
+        _draw_tracked(
+            draw,
+            (64, 152 + offset * line_height),
+            line,
+            title_font,
+            INK,
+            title_tracking,
+        )
+
+    subtitle_text = _ellipsize(
+        draw,
+        subtitle.upper(),
+        _font(16, "Medium"),
+        780,
+        tracking=0.4,
+    )
+    draw.text(
+        (64, 218),
+        subtitle_text,
+        font=_font(16, "Medium"),
+        fill=BODY,
+    )
+
+    # Large charcoal event-count block on the right.
+    draw.rounded_rectangle([930, 130, 1136, 232], radius=20, fill=CHARCOAL)
+    count_text = f"{min(count, 99):02d}" if count < 100 else "99+"
+    count_font = _font(54, "ExtraBold")
+    count_width = _text_width(draw, count_text, count_font)
+    draw.text(
+        (930 + (206 - count_width) / 2, 146),
+        count_text,
+        font=count_font,
+        fill=WHITE,
+    )
+    event_label = "EVENT" if count == 1 else "EVENTS"
+    label_width = _tracked_width(
+        draw, event_label, _font(11, "Bold"), 11 * 0.18
+    )
+    _draw_tracked(
+        draw,
+        (930 + (206 - label_width) / 2, 207),
+        event_label,
+        _font(11, "Bold"),
+        TEAL_BRIGHT,
+        11 * 0.18,
+    )
+
+    draw.line([(64, 252), (WIDTH - 64, 252)], fill=LINE, width=1)
+
+
+def _digest_row(
+    draw: ImageDraw.ImageDraw,
+    event: Event,
+    tz: ZoneInfo,
+    left: float,
+    top: float,
+    width: float,
+    height: float,
+    *,
+    show_day: bool,
+    show_values: bool,
+    compact: bool,
+) -> None:
+    draw.rounded_rectangle(
+        [left, top, left + width, top + height],
+        radius=14,
+        fill=PANEL,
+        outline=LINE,
+        width=1,
+    )
+    draw.rounded_rectangle(
+        [left, top, left + 5, top + height],
+        radius=2,
+        fill=RED,
+    )
+
+    pad = 16 if compact else 20
+    day_width = 66 if show_day else 0
+    time_width = 0 if show_day else 58
+    badge_width = 48 if compact else 56
+    badge_height = 26 if compact else 30
+    badge_font = _font(12 if compact else 14, "ExtraBold")
+    title_font = _font(14 if compact else 19, "SemiBold")
+    values_width = 158 if show_values else 0
+
+    local_when = event.when.astimezone(tz)
+    if show_day:
+        _draw_tracked(
+            draw,
+            (left + pad, top + height / 2 - 19),
+            local_when.strftime("%a %d").upper(),
+            _font(10, "Bold"),
+            MUTED_DARK,
+            10 * 0.12,
+        )
+        _draw_vcentered(
+            draw,
+            left + pad,
+            top + height / 2 - 2,
+            height / 2,
+            local_when.strftime("%H:%M"),
+            _font(18, "Bold"),
+            INK,
+        )
+    else:
+        _draw_vcentered(
+            draw,
+            left + pad,
+            top,
+            height,
+            local_when.strftime("%H:%M"),
+            _font(20 if not compact else 17, "Bold"),
+            INK,
+        )
+
+    badge_left = left + pad + day_width + time_width + (10 if time_width else 0)
+    _draw_badge(
+        draw,
+        badge_left,
+        top + (height - badge_height) / 2,
+        badge_width,
+        badge_height,
+        event.currency,
+        badge_font,
+        CHARCOAL,
+    )
+
+    title_x = badge_left + badge_width + 12
+    title_width = left + width - pad - values_width - title_x
+    title_lines, _clipped = _wrap(
+        draw,
+        event.title,
+        title_font,
+        title_width,
+        2,
+    )
+    title_height = (title_font.size / RENDER_SCALE) * 1.12
+    block_height = len(title_lines) * title_height
+    title_y = top + (height - block_height) / 2
+    for line in title_lines:
+        draw.text((title_x, title_y), line, font=title_font, fill=INK)
+        title_y += title_height
+
+    if show_values:
+        values = [
+            ("F", event.forecast),
+            ("P", event.previous),
+        ]
+        if event.actual and event.actual.strip():
+            values.insert(0, ("A", event.actual))
+        values = [(label, value.strip()) for label, value in values if value and value.strip()]
+        if values:
+            value_font = _font(12, "Medium")
+            line_height = 14
+            block_height = len(values) * line_height
+            value_y = top + (height - block_height) / 2
+            right = left + width - pad
+            for label, value in values:
+                _draw_right(
+                    draw,
+                    right,
+                    value_y,
+                    f"{label} {value}",
+                    value_font,
+                    MUTED_DARK,
+                )
+                value_y += line_height
+
+
+def _render_digest(
+    events: list[Event],
+    *,
+    eyebrow: str,
+    title: str,
+    subtitle: str,
+    right_label: str,
+    tz: ZoneInfo,
+    brand: str,
+    handle: str,
+    test: bool,
+    show_day: bool,
+    alt_label: str,
+) -> CardImage:
+    ordered = sorted(events, key=lambda event: event.when)
+    image = _background()
+    draw = _ScaledDraw(ImageDraw.Draw(image), RENDER_SCALE)
+
+    _digest_header(draw, brand, test, right_label)
+    _digest_heading(
+        draw,
+        eyebrow,
+        title,
+        subtitle,
+        len(ordered),
+        tz.key or "UTC",
+    )
+
+    top = 270
+    bottom = 592
+    available = bottom - top
+    if len(ordered) <= 6:
+        columns = 1
+    elif len(ordered) <= 12:
+        columns = 2
+    else:
+        columns = 3
+
+    gap_x = 20
+    gap_y = 10 if len(ordered) <= 6 else 8
+    col_width = (WIDTH - 128 - gap_x * (columns - 1)) / columns
+    max_rows = max(1, int((available + gap_y) // (38 + gap_y)))
+    max_events = max_rows * columns
+    shown = ordered[:max_events]
+    truncated = len(ordered) - len(shown)
+
+    rows = max(1, (len(shown) + columns - 1) // columns)
+    row_height = min(
+        66, (available - gap_y * (rows - 1)) / rows
+    )
+    row_height = max(38, row_height)
+    block_height = rows * row_height + gap_y * (rows - 1)
+    start_y = top + max(0, (available - block_height) / 2)
+
+    if not shown:
+        draw.rounded_rectangle(
+            [64, top, WIDTH - 64, bottom],
+            radius=20,
+            fill=PANEL,
+            outline=LINE,
+            width=1,
+        )
+        _draw_vcentered(
+            draw,
+            64,
+            top,
+            bottom - top,
+            "No high-impact events scheduled.",
+            _font(24, "Medium"),
+            MUTED_DARK,
+        )
+    else:
+        for index, event in enumerate(shown):
+            column = index // rows
+            row = index % rows
+            left = 64 + column * (col_width + gap_x)
+            row_top = start_y + row * (row_height + gap_y)
+            _digest_row(
+                draw,
+                event,
+                tz,
+                left,
+                row_top,
+                col_width,
+                row_height,
+                show_day=show_day,
+                show_values=not show_day and columns == 1,
+                compact=columns > 1,
+            )
+
+    if truncated > 0:
+        _draw_right(
+            draw,
+            WIDTH - 64,
+            592,
+            f"+{truncated} more",
+            _font(12, "Bold"),
+            RED,
+        )
+
+    _digest_footer(draw, brand, handle, tz.key or "UTC")
+    return _encode_card(image, _digest_alt(ordered, alt_label, tz))
+
+
+def _digest_alt(events: list[Event], label: str, tz: ZoneInfo) -> str:
+    parts = [f"Pipwire {label} high-impact economic calendar"]
+    for event in events[:12]:
+        parts.append(
+            f"{event.when.astimezone(tz):%a %d %b %H:%M} "
+            f"{event.currency} {event.title}"
+        )
+    if len(events) > 12:
+        parts.append(f"and {len(events) - 12} more events")
+    return ". ".join(parts)[:1000]
+
+
+def _encode_card(image: Image.Image, alt: str) -> CardImage:
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG", optimize=True)
+    data = buffer.getvalue()
+    mime = "image/png"
+
+    if len(data) > 1_000_000:
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG", quality=90, optimize=True)
+        data = buffer.getvalue()
+        mime = "image/jpeg"
+
+    return CardImage(
+        data=data,
+        mime=mime,
+        width=WIDTH * RENDER_SCALE,
+        height=HEIGHT * RENDER_SCALE,
+        alt=alt,
+    )
+
+
 def render_card(
     event: Event,
     kind: str,
@@ -627,21 +1111,59 @@ def render_card(
         fill=MUTED,
     )
 
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG", optimize=True)
-    data = buffer.getvalue()
-    mime = "image/png"
+    return _encode_card(image, _alt_text(event, kind, minutes, tz))
 
-    if len(data) > 1_000_000:
-        buffer = io.BytesIO()
-        image.save(buffer, format="JPEG", quality=90, optimize=True)
-        data = buffer.getvalue()
-        mime = "image/jpeg"
 
-    return CardImage(
-        data=data,
-        mime=mime,
-        width=WIDTH * RENDER_SCALE,
-        height=HEIGHT * RENDER_SCALE,
-        alt=_alt_text(event, kind, minutes, tz),
+def render_daily_card(
+    events: list[Event],
+    day: date,
+    tz: ZoneInfo,
+    *,
+    brand: str = "Pipwire",
+    handle: str = "",
+    test: bool = False,
+) -> CardImage:
+    """Render the day's high-impact (red-news) calendar overview."""
+
+    return _render_digest(
+        events,
+        eyebrow="Pipwire · Red news",
+        title="Today's red news",
+        subtitle=f"{day:%A %d %B %Y} · {len(events)} high-impact event"
+        + ("" if len(events) == 1 else "s"),
+        right_label="HIGH IMPACT",
+        tz=tz,
+        brand=brand,
+        handle=handle,
+        test=test,
+        show_day=False,
+        alt_label=f"daily red-news calendar for {day:%A %d %B %Y}",
+    )
+
+
+def render_weekly_card(
+    events: list[Event],
+    start: date,
+    end: date,
+    tz: ZoneInfo,
+    *,
+    brand: str = "Pipwire",
+    handle: str = "",
+    test: bool = False,
+) -> CardImage:
+    """Render the next seven days of high-impact events."""
+
+    return _render_digest(
+        events,
+        eyebrow="Pipwire · Week ahead",
+        title="Weekly red news",
+        subtitle=f"{start:%d %b} — {end:%d %b %Y} · {len(events)} high-impact event"
+        + ("" if len(events) == 1 else "s"),
+        right_label="WEEK AHEAD",
+        tz=tz,
+        brand=brand,
+        handle=handle,
+        test=test,
+        show_day=True,
+        alt_label=f"weekly red-news calendar for {start:%d %B} to {end:%d %B %Y}",
     )

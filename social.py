@@ -24,7 +24,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -83,6 +83,52 @@ def _env_minutes(name: str, default: str) -> list[int]:
     return sorted(minutes, reverse=True)
 
 
+def _env_time(name: str, default: str) -> str:
+    """Return a validated HH:MM time, or ``off`` when disabled."""
+
+    raw = os.getenv(name, default).strip().lower()
+    if raw in {"", "off", "false", "no", "disabled"}:
+        return "off"
+    try:
+        hour_text, minute_text = raw.split(":", 1)
+        hour = int(hour_text)
+        minute = int(minute_text)
+    except (TypeError, ValueError):
+        return default
+    if 0 <= hour <= 23 and 0 <= minute <= 59:
+        return f"{hour:02d}:{minute:02d}"
+    return default
+
+
+_WEEKDAYS = {
+    "mon": 0,
+    "monday": 0,
+    "tue": 1,
+    "tuesday": 1,
+    "wed": 2,
+    "wednesday": 2,
+    "thu": 3,
+    "thursday": 3,
+    "fri": 4,
+    "friday": 4,
+    "sat": 5,
+    "saturday": 5,
+    "sun": 6,
+    "sunday": 6,
+}
+
+
+def _env_weekday(name: str, default: str = "mon") -> int:
+    raw = os.getenv(name, default).strip().lower()
+    if raw in _WEEKDAYS:
+        return _WEEKDAYS[raw]
+    try:
+        value = int(raw)
+    except ValueError:
+        return _WEEKDAYS[default]
+    return value if 0 <= value <= 6 else _WEEKDAYS[default]
+
+
 def _zone(name: str) -> ZoneInfo:
     try:
         return ZoneInfo(name)
@@ -92,12 +138,15 @@ def _zone(name: str) -> ZoneInfo:
 
 @dataclass
 class SocialConfig:
-    x_mode: str = "reminder"
+    x_mode: str = "all"
     bluesky_mode: str = "all"
     min_impact: str = "high"
     currencies: set[str] = field(default_factory=set)
     reminder_minutes: list[int] = field(default_factory=lambda: [15])
     timezone: str = "UTC"
+    daily_time: str = "07:00"
+    weekly_time: str = "07:00"
+    weekly_day: int = 0
     buffer_api_key: str = ""
     buffer_channel_id: str = ""
     bluesky_handle: str = ""
@@ -131,12 +180,15 @@ def load_social_config() -> SocialConfig:
         currencies = set()
 
     return SocialConfig(
-        x_mode=_env_mode("X_POST_MODE", "reminder"),
+        x_mode=_env_mode("X_POST_MODE", "all"),
         bluesky_mode=_env_mode("BLUESKY_POST_MODE", "all"),
         min_impact=min_impact,
         currencies=currencies,
         reminder_minutes=_env_minutes("SOCIAL_REMINDER_MINUTES", "15"),
         timezone=stored_tz,
+        daily_time=_env_time("SOCIAL_DAILY_TIME", "07:00"),
+        weekly_time=_env_time("SOCIAL_WEEKLY_TIME", "07:00"),
+        weekly_day=_env_weekday("SOCIAL_WEEKLY_DAY", "mon"),
         buffer_api_key=os.getenv("BUFFER_API_KEY", "").strip(),
         buffer_channel_id=os.getenv("BUFFER_CHANNEL_ID", "").strip(),
         bluesky_handle=os.getenv("BLUESKY_HANDLE", "").strip(),
@@ -180,46 +232,108 @@ def _tags(event: Event) -> str:
 
 
 def _test_suffix(test: bool) -> str:
-    return "\n(test post)" if test else ""
+    return "(test post)" if test else ""
+
+
+def _lines(*parts: str) -> str:
+    """Join post paragraphs with a blank line so nothing touches."""
+
+    return "\n\n".join(part.strip() for part in parts if part and part.strip())
+
+
+def _digest_tags() -> str:
+    return "#Forex #Pipwire"
 
 
 def reminder_text(
     event: Event, minutes: int, tz: ZoneInfo, *, test: bool = False
 ) -> str:
-    return "".join(
-        [
-            f"{impact_emoji(event.impact)} {event.currency} · {event.title}\n",
-            f"🕒 {_when(event, tz)} (in {minutes} min)\n",
-            f"Forecast {_value(event.forecast)} · Previous {_value(event.previous)}\n",
-            _tags(event),
-            _test_suffix(test),
-        ]
+    return _lines(
+        f"{impact_emoji(event.impact)} {event.currency} · {event.title}",
+        f"🕒 {_when(event, tz)} (in {minutes} min)",
+        f"Forecast {_value(event.forecast)} · Previous {_value(event.previous)}",
+        _tags(event),
+        _test_suffix(test),
     )
 
 
 def release_text(event: Event, tz: ZoneInfo, *, test: bool = False) -> str:
-    return "".join(
-        [
-            f"🚨 {event.currency} · {event.title} — released\n",
-            f"🕒 {_when(event, tz)}\n",
-            f"Forecast {_value(event.forecast)} · Previous {_value(event.previous)}\n",
-            _tags(event),
-            _test_suffix(test),
-        ]
+    return _lines(
+        f"🚨 {event.currency} · {event.title} — released",
+        f"🕒 {_when(event, tz)}",
+        f"Forecast {_value(event.forecast)} · Previous {_value(event.previous)}",
+        _tags(event),
+        _test_suffix(test),
     )
 
 
 def summary_text(event: Event, tz: ZoneInfo, *, test: bool = False) -> str:
     headline, _detail, _colour = summary_result(event)
-    return "".join(
-        [
-            f"📊 {event.currency} · {event.title}\n",
-            f"Actual {_value(event.actual)} vs forecast {_value(event.forecast)}\n",
-            f"{headline} · {_when(event, tz)}\n",
-            _tags(event),
-            _test_suffix(test),
-        ]
+    return _lines(
+        f"📊 {event.currency} · {event.title}",
+        f"Actual {_value(event.actual)} vs forecast {_value(event.forecast)}",
+        f"{headline} · {_when(event, tz)}",
+        _tags(event),
+        _test_suffix(test),
     )
+
+
+def daily_text(
+    events: list[Event], day: date, tz: ZoneInfo, *, test: bool = False
+) -> str:
+    """A short daily post; the card carries every event and value."""
+
+    ordered = sorted(events, key=lambda event: event.when)
+    shown = ordered[:5]
+    lines = [f"🔴 {day:%a %d %b} · HIGH-IMPACT DAY"]
+    for event in shown:
+        lines.append(
+            f"{event.when.astimezone(tz):%H:%M} "
+            f"{event.currency} · {event.title}"
+        )
+    if len(ordered) > len(shown):
+        lines.append(f"+{len(ordered) - len(shown)} more on the card")
+    if not ordered:
+        lines.append("No high-impact events scheduled.")
+    lines.append(_digest_tags())
+    if test:
+        lines.append(_test_suffix(test))
+    return _lines(*lines)
+
+
+def weekly_text(
+    events: list[Event],
+    start: date,
+    end: date,
+    tz: ZoneInfo,
+    *,
+    test: bool = False,
+) -> str:
+    """A compact week overview grouped by day; the card lists each event."""
+
+    ordered = sorted(events, key=lambda event: event.when)
+    counts: dict[date, int] = {}
+    for event in ordered:
+        local_day = event.when.astimezone(tz).date()
+        counts[local_day] = counts.get(local_day, 0) + 1
+
+    total = len(ordered)
+    lines = [
+        f"🔴 RED NEWS · {start:%d %b} — {end:%d %b} · {total} EVENT"
+        + ("" if total == 1 else "S")
+    ]
+    for local_day in sorted(counts):
+        count = counts[local_day]
+        lines.append(
+            f"{local_day:%a %d %b} · {count} event"
+            + ("" if count == 1 else "s")
+        )
+    if not counts:
+        lines.append("No high-impact events scheduled.")
+    lines.append(_digest_tags())
+    if test:
+        lines.append(_test_suffix(test))
+    return _lines(*lines)
 
 
 def _hashtag_facets(text: str) -> list[dict]:

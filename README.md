@@ -238,15 +238,20 @@ runs exactly as before and only posts to Discord.
 `X_POST_MODE` and `BLUESKY_POST_MODE` control each target independently:
 `off`, `reminder`, `release`, `summary`, or `all`.
 
-The defaults are deliberately conservative:
+The defaults are deliberately simple:
 
-- **X**: `reminder` — one pre-event post per event, which keeps Buffer's free
-  request quota comfortable.
-- **Bluesky**: `all` — reminder, release and post-release summary.
+- **X**: `all` — reminder, release, post-release summary, plus daily and weekly
+  red-news cards.
+- **Bluesky**: `all` — the same set of posts as X.
 
-Posts include the event time, forecast/previous values and hashtags. Images are
-attached as branded cards, so no links are needed: no link-card dependency and
-no X URL surcharge.
+Posts include the event time, forecast/previous values and hashtags, with a
+blank line between every line so nothing feels cramped. Images are attached as
+branded cards, so no links are needed: no link-card dependency and no X URL
+surcharge.
+
+Once a day the bot posts a **daily red-news card** with every high-impact event
+for that day. Once a week it posts a **weekly red-news card** covering the next
+seven days. Both use `SOCIAL_TIMEZONE` and can be disabled with `off`.
 
 ### Branded image cards
 
@@ -255,8 +260,10 @@ with Pillow. The card is drawn at 2x supersampling so text and hairlines stay
 sharp on high-DPI screens, then saved as a 16:9 PNG. The cards use the Pipwire
 palette (light-gray post background, charcoal number badges, teal accents, soft
 red for high-impact labels) and the event title, impact badge, currency, time,
-and forecast/previous/actual values. No AI image service is involved, so the
-numbers are exact and each card takes well under a second to render.
+and forecast/previous/actual values. The daily and weekly red-news cards use the
+same system to lay out every high-impact event in one glance. No AI image
+service is involved, so the numbers are exact and each card takes well under a
+second to render.
 
 - The bundled font is `assets/fonts/Inter-Variable.ttf` (SIL OFL licence in
   `assets/fonts/OFL.txt`).
@@ -336,7 +343,7 @@ On macOS, use `launchd` or run it inside `tmux`/`screen` instead.
 | `FEED_TTL_SECONDS` | `600` | Calendar feed cache duration. |
 | `BUFFER_API_KEY` | empty | Buffer API key; enables X posting when set with the channel ID. |
 | `BUFFER_CHANNEL_ID` | empty | Buffer channel ID for the X account. |
-| `X_POST_MODE` | `reminder` | X posts: `off`, `reminder`, `release`, `summary`, `all`. |
+| `X_POST_MODE` | `all` | X posts: `off`, `reminder`, `release`, `summary`, `all`. |
 | `BLUESKY_HANDLE` | empty | Bluesky handle, e.g. `name.bsky.social`. |
 | `BLUESKY_APP_PASSWORD` | empty | Bluesky app password (not the main password). |
 | `BLUESKY_PDS` | `https://bsky.social` | Bluesky PDS endpoint. |
@@ -344,7 +351,10 @@ On macOS, use `launchd` or run it inside `tmux`/`screen` instead.
 | `SOCIAL_CURRENCIES` | empty (all) | Currency filter for social posts. |
 | `SOCIAL_MIN_IMPACT` | `high` | Minimum impact for social posts. |
 | `SOCIAL_REMINDER_MINUTES` | `15` | Reminder offsets for social posts. |
-| `SOCIAL_TIMEZONE` | `UTC` | Timezone used in social post times. |
+| `SOCIAL_TIMEZONE` | `UTC` | Timezone used in social post times and digest scheduling. |
+| `SOCIAL_DAILY_TIME` | `07:00` | Daily red-news card time (`HH:MM`) or `off`. |
+| `SOCIAL_WEEKLY_TIME` | `07:00` | Weekly red-news card time (`HH:MM`) or `off`. |
+| `SOCIAL_WEEKLY_DAY` | `mon` | Weekly card weekday (`mon`..`sun` or `0`..`6`). |
 | `SOCIAL_IMAGES` | `true` | Render branded 2400×1350 cards for social posts. |
 | `SOCIAL_BRAND_NAME` | `Pipwire` | Brand text in the card header/footer. |
 | `SOCIAL_BRAND_HANDLE` | empty | Optional handle shown next to the brand. |

@@ -53,6 +53,13 @@ class FormattingTests(unittest.TestCase):
         self.assertIn("(test post)", text)
         self.assertLessEqual(len(text), social.X_LIMIT)
 
+    def test_posts_put_a_blank_line_between_every_line(self) -> None:
+        text = social.reminder_text(self.event, 15, ZoneInfo("UTC"))
+        self.assertNotIn("\n\n\n", text)
+        self.assertTrue(text.startswith("🔴 USD"))
+        for line in text.split("\n\n"):
+            self.assertNotIn("\n", line)
+
     def test_summary_text_uses_actual_and_forecast(self) -> None:
         text = social.summary_text(
             replace(self.event, actual="0.4%"), ZoneInfo("UTC")
@@ -60,6 +67,34 @@ class FormattingTests(unittest.TestCase):
         self.assertIn("Actual 0.4% vs forecast 0.2%", text)
         self.assertIn("Better than expected", text)
         self.assertLessEqual(len(text), social.BLUESKY_LIMIT)
+
+    def test_daily_text_lists_events_and_fits_x(self) -> None:
+        events = [
+            replace(self.event, id=f"d{i}", when=self.event.when + timedelta(hours=i))
+            for i in range(5)
+        ]
+        text = social.daily_text(
+            events, self.event.when.date(), ZoneInfo("UTC")
+        )
+        self.assertIn("HIGH-IMPACT DAY", text)
+        self.assertEqual(text.count("Test event"), 5)
+        self.assertLessEqual(len(text), social.X_LIMIT)
+
+    def test_weekly_text_groups_events_by_day(self) -> None:
+        events = [
+            replace(self.event, id="w1"),
+            replace(self.event, id="w2", when=self.event.when + timedelta(days=1)),
+        ]
+        text = social.weekly_text(
+            events,
+            self.event.when.date(),
+            (self.event.when + timedelta(days=6)).date(),
+            ZoneInfo("UTC"),
+        )
+        self.assertIn("2 EVENTS", text)
+        self.assertIn("Tue 24 Nov · 1 event", text)
+        self.assertIn("Wed 25 Nov · 1 event", text)
+        self.assertLessEqual(len(text), social.X_LIMIT)
 
     def test_clip_never_exceeds_limit(self) -> None:
         clipped = social._clip("x" * 100, 20)
@@ -85,6 +120,9 @@ class ConfigTests(unittest.TestCase):
                 "SOCIAL_CURRENCIES",
                 "SOCIAL_REMINDER_MINUTES",
                 "SOCIAL_TIMEZONE",
+                "SOCIAL_DAILY_TIME",
+                "SOCIAL_WEEKLY_TIME",
+                "SOCIAL_WEEKLY_DAY",
                 "SOCIAL_MIN_IMPACT",
                 "BUFFER_API_KEY",
                 "BUFFER_CHANNEL_ID",
@@ -99,10 +137,13 @@ class ConfigTests(unittest.TestCase):
             ):
                 os.environ.pop(name, None)
             cfg = social.load_social_config()
-        self.assertEqual(cfg.x_mode, "reminder")
+        self.assertEqual(cfg.x_mode, "all")
         self.assertEqual(cfg.bluesky_mode, "all")
         self.assertEqual(cfg.reminder_minutes, [15])
         self.assertEqual(cfg.min_impact, "high")
+        self.assertEqual(cfg.daily_time, "07:00")
+        self.assertEqual(cfg.weekly_time, "07:00")
+        self.assertEqual(cfg.weekly_day, 0)
         self.assertTrue(cfg.images_enabled)
         self.assertEqual(cfg.brand_name, "Pipwire")
         self.assertFalse(cfg.currencies)
@@ -123,6 +164,8 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(manager.active)
         self.assertEqual(manager.targets_for("reminder"), ["x", "bluesky"])
         self.assertEqual(manager.targets_for("summary"), ["bluesky"])
+        self.assertEqual(manager.targets_for("daily"), ["bluesky"])
+        self.assertEqual(manager.targets_for("weekly"), ["bluesky"])
         self.assertIn("X via Buffer (reminder)", manager.describe())
         self.assertNotIn("key", manager.describe())
         self.assertNotIn("app-password", manager.describe())
@@ -412,6 +455,52 @@ class GraphicsTests(unittest.TestCase):
         card = render_card(event, "summary", ZoneInfo("UTC"))
         self.assertGreater(len(card.data), 1000)
 
+    def test_daily_digest_card_is_full_size_and_within_limit(self) -> None:
+        from PIL import Image
+
+        from graphics import render_daily_card
+
+        day = datetime(2026, 11, 25, tzinfo=timezone.utc).date()
+        events = [
+            replace(
+                _event(f"d{i}", datetime(2026, 11, 25, 8 + i, 30, tzinfo=timezone.utc)),
+                title=f"High impact event {i}",
+            )
+            for i in range(5)
+        ]
+        card = render_daily_card(events, day, ZoneInfo("UTC"))
+
+        self.assertEqual((card.width, card.height), (2400, 1350))
+        self.assertEqual(card.mime, "image/png")
+        self.assertLessEqual(len(card.data), 1_000_000)
+        self.assertEqual(Image.open(BytesIO(card.data)).size, (2400, 1350))
+        self.assertIn("daily red-news", card.alt)
+        self.assertIn("High impact event 0", card.alt)
+
+    def test_weekly_digest_card_handles_many_events(self) -> None:
+        from graphics import render_weekly_card
+
+        start = datetime(2026, 11, 25, tzinfo=timezone.utc).date()
+        end = start + timedelta(days=6)
+        events = [
+            replace(
+                _event(
+                    f"w{i}",
+                    datetime(2026, 11, 25, 8, 30, tzinfo=timezone.utc)
+                    + timedelta(days=i // 2, hours=i),
+                ),
+                currency="USD" if i % 2 else "EUR",
+                title=f"Weekly high impact event {i}",
+            )
+            for i in range(10)
+        ]
+        card = render_weekly_card(events, start, end, ZoneInfo("UTC"))
+
+        self.assertEqual((card.width, card.height), (2400, 1350))
+        self.assertEqual(card.mime, "image/png")
+        self.assertLessEqual(len(card.data), 1_000_000)
+        self.assertIn("weekly red-news", card.alt)
+
 
 class FakeManager:
     active = True
@@ -431,6 +520,8 @@ class FakeManager:
             "reminder": ["x"],
             "release": ["bluesky"],
             "summary": ["bluesky"],
+            "daily": ["x", "bluesky"],
+            "weekly": ["x", "bluesky"],
         }.get(kind, [])
 
     def publish(
@@ -533,6 +624,55 @@ class AlertTickTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(render.call_count, 3)
         self.assertEqual(manager.images, [sentinel, sentinel, sentinel])
+
+    async def test_tick_posts_daily_digest_at_configured_time(self) -> None:
+        now = datetime(2026, 11, 25, 7, 0, tzinfo=timezone.utc)
+        events = [
+            _event(
+                "day",
+                datetime(2026, 11, 25, 13, 30, tzinfo=timezone.utc),
+            )
+        ]
+        manager = FakeManager()
+        manager.config.daily_time = "07:00"
+        manager.config.weekly_time = "off"
+
+        with (
+            mock.patch.object(bot_module, "social_manager", manager),
+            mock.patch.object(bot_module, "service", FakeService(events)),
+            mock.patch.object(bot_module, "state", FakeState()),
+        ):
+            instance = bot_module.ForexBot()
+            await instance._social_tick(now)
+
+        daily_posts = [post for post in manager.posts if "HIGH-IMPACT DAY" in post[1]]
+        self.assertEqual(len(daily_posts), 2)
+        self.assertEqual({target for target, _ in daily_posts}, {"x", "bluesky"})
+
+    async def test_tick_posts_weekly_digest_on_configured_day(self) -> None:
+        now = datetime(2026, 11, 30, 7, 0, tzinfo=timezone.utc)
+        events = [
+            _event(
+                "week",
+                datetime(2026, 12, 1, 13, 30, tzinfo=timezone.utc),
+            )
+        ]
+        manager = FakeManager()
+        manager.config.daily_time = "off"
+        manager.config.weekly_time = "07:00"
+        manager.config.weekly_day = 0
+
+        with (
+            mock.patch.object(bot_module, "social_manager", manager),
+            mock.patch.object(bot_module, "service", FakeService(events)),
+            mock.patch.object(bot_module, "state", FakeState()),
+        ):
+            instance = bot_module.ForexBot()
+            await instance._social_tick(now)
+
+        weekly_posts = [post for post in manager.posts if "RED NEWS" in post[1]]
+        self.assertEqual(len(weekly_posts), 2)
+        self.assertEqual({target for target, _ in weekly_posts}, {"x", "bluesky"})
 
     async def test_failed_target_is_retried_after_cooldown(self) -> None:
         now = datetime(2026, 11, 24, 13, 30, tzinfo=timezone.utc)

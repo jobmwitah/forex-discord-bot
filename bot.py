@@ -51,17 +51,26 @@ from formatting import (
 )
 from social import (
     SocialManager,
+    daily_text,
     load_social_config,
     release_text,
     reminder_text,
     summary_text,
+    weekly_text,
 )
 
 try:
-    from graphics import CardImage, render_card
+    from graphics import (
+        CardImage,
+        render_card,
+        render_daily_card,
+        render_weekly_card,
+    )
 except Exception as _graphics_error:  # noqa: BLE001 - images stay optional
     CardImage = None  # type: ignore[assignment,misc]
     render_card = None  # type: ignore[assignment]
+    render_daily_card = None  # type: ignore[assignment]
+    render_weekly_card = None  # type: ignore[assignment]
     _GRAPHICS_IMPORT_ERROR: Exception | None = _graphics_error
 else:
     _GRAPHICS_IMPORT_ERROR = None
@@ -132,6 +141,22 @@ def _tz(name: str) -> ZoneInfo:
         return ZoneInfo("UTC")
 
 
+def _schedule_due(now: datetime, tz: ZoneInfo, hhmm: str) -> bool:
+    """True during the 15-minute window after a configured HH:MM time."""
+
+    if not hhmm or hhmm == "off":
+        return False
+    try:
+        hour, minute = (int(part) for part in hhmm.split(":", 1))
+    except (TypeError, ValueError):
+        return False
+    local_now = now.astimezone(tz)
+    target = local_now.replace(
+        hour=hour, minute=minute, second=0, microsecond=0
+    )
+    return 0 <= (local_now - target).total_seconds() <= 900
+
+
 def _env_channel_id() -> int | None:
     raw = os.getenv("ALERT_CHANNEL_ID", "").strip()
     if not raw:
@@ -193,6 +218,46 @@ def _social_card(
             kind,
             tz,
             minutes=minutes,
+            brand=social_manager.config.brand_name,
+            handle=social_manager.config.brand_handle,
+            test=test,
+        )
+    except Exception as exc:  # noqa: BLE001 - text-only fallback
+        log.warning("Could not render %s social card: %s", kind, exc)
+        return None
+
+
+def _social_digest_card(
+    kind: str,
+    events: list[Event],
+    start: date,
+    end: date,
+    tz: ZoneInfo,
+    *,
+    test: bool = False,
+) -> CardImage | None:
+    """Render a daily or weekly red-news digest card."""
+
+    if not social_manager.images_enabled:
+        return None
+    renderer = render_daily_card if kind == "daily" else render_weekly_card
+    if renderer is None:
+        return None
+    try:
+        if kind == "daily":
+            return renderer(
+                events,
+                start,
+                tz,
+                brand=social_manager.config.brand_name,
+                handle=social_manager.config.brand_handle,
+                test=test,
+            )
+        return renderer(
+            events,
+            start,
+            end,
+            tz,
             brand=social_manager.config.brand_name,
             handle=social_manager.config.brand_handle,
             test=test,
@@ -368,6 +433,83 @@ class ForexBot(commands.Bot):
 
         return results
 
+    async def _social_daily_digest(
+        self,
+        now: datetime,
+        tz: ZoneInfo,
+        today: date,
+        events: list[Event],
+    ) -> None:
+        """Post the day's red-news card at the configured local time."""
+
+        cfg = social_manager.config
+        if not _schedule_due(now, tz, cfg.daily_time):
+            return
+
+        key = f"daily:{today.isoformat()}"
+        pending = [
+            target
+            for target in social_manager.targets_for("daily")
+            if not state.seen(f"social:{target}:{key}")
+        ]
+        if not pending:
+            return
+
+        todays = filter_events(
+            events_on_local_date(events, today, tz),
+            cfg.currencies,
+            "high",
+        )
+        card = await asyncio.to_thread(
+            _social_digest_card, "daily", todays, today, today, tz
+        )
+        await self._social_publish(
+            "daily", key, daily_text(todays, today, tz), card
+        )
+
+    async def _social_weekly_digest(
+        self, now: datetime, tz: ZoneInfo, today: date
+    ) -> None:
+        """Post the week-ahead red-news card on the configured weekday."""
+
+        cfg = social_manager.config
+        if now.astimezone(tz).weekday() != cfg.weekly_day:
+            return
+        if not _schedule_due(now, tz, cfg.weekly_time):
+            return
+
+        end = today + timedelta(days=6)
+        key = f"weekly:{today.isoformat()}"
+        pending = [
+            target
+            for target in social_manager.targets_for("weekly")
+            if not state.seen(f"social:{target}:{key}")
+        ]
+        if not pending:
+            return
+
+        try:
+            events = await service.events_for_range(today, end)
+        except Exception:
+            log.exception("Could not load calendar for the weekly social post")
+            return
+
+        highs = filter_events(
+            [
+                event
+                for event in events
+                if today <= event.when.astimezone(tz).date() <= end
+            ],
+            cfg.currencies,
+            "high",
+        )
+        card = await asyncio.to_thread(
+            _social_digest_card, "weekly", highs, today, end, tz
+        )
+        await self._social_publish(
+            "weekly", key, weekly_text(highs, today, end, tz), card
+        )
+
     async def _social_tick(self, now: datetime) -> None:
         """Post reminders, releases and summaries to Buffer/Bluesky.
 
@@ -480,6 +622,10 @@ class ForexBot(commands.Bot):
                 summary_text(updated, tz),
                 card,
             )
+
+        # Daily and weekly red-news overview cards.
+        await self._social_daily_digest(now, tz, today, events)
+        await self._social_weekly_digest(now, tz, today)
 
     async def _alert_tick(self) -> None:
         now = discord.utils.utcnow()
