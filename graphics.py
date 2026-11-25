@@ -506,7 +506,7 @@ def render_card(
 
         max_value_width = badge_width - 48
         value_font = _font(40, "Bold")
-        for size in (72, 68, 64, 60, 56, 52, 48, 44, 40):
+        for size in (88, 84, 80, 76, 72, 68, 64, 60, 56, 52, 48, 44, 40):
             candidate = _font(size, "Bold")
             if _tracked_width(draw, value, candidate, 0.4) <= max_value_width:
                 value_font = candidate
