@@ -250,12 +250,13 @@ no X URL surcharge.
 
 ### Branded image cards
 
-Every social post includes a deterministic **1200×675** card rendered locally
-with Pillow. The cards use the Pipwire palette (light-gray post background,
-charcoal number badges, teal accents, soft red for high-impact labels) and the
-event title, impact badge, currency, time, and forecast/previous/actual values.
-No AI image service is involved, so the numbers are exact and each card takes
-well under a second to render.
+Every social post includes a deterministic **2400×1350** card rendered locally
+with Pillow. The card is drawn at 2x supersampling so text and hairlines stay
+sharp on high-DPI screens, then saved as a 16:9 PNG. The cards use the Pipwire
+palette (light-gray post background, charcoal number badges, teal accents, soft
+red for high-impact labels) and the event title, impact badge, currency, time,
+and forecast/previous/actual values. No AI image service is involved, so the
+numbers are exact and each card takes well under a second to render.
 
 - The bundled font is `assets/fonts/Inter-Variable.ttf` (SIL OFL licence in
   `assets/fonts/OFL.txt`).
@@ -344,7 +345,7 @@ On macOS, use `launchd` or run it inside `tmux`/`screen` instead.
 | `SOCIAL_MIN_IMPACT` | `high` | Minimum impact for social posts. |
 | `SOCIAL_REMINDER_MINUTES` | `15` | Reminder offsets for social posts. |
 | `SOCIAL_TIMEZONE` | `UTC` | Timezone used in social post times. |
-| `SOCIAL_IMAGES` | `true` | Render branded 1200×675 cards for social posts. |
+| `SOCIAL_IMAGES` | `true` | Render branded 2400×1350 cards for social posts. |
 | `SOCIAL_BRAND_NAME` | `Pipwire` | Brand text in the card header/footer. |
 | `SOCIAL_BRAND_HANDLE` | empty | Optional handle shown next to the brand. |
 | `SOCIAL_FONT_PATH` | bundled Inter | Override the card font file. |
@@ -363,7 +364,7 @@ forex-discord-bot/
 ├── html_parser.py       # HTML fallback parser (BeautifulSoup only)
 ├── config.py            # env defaults + per-guild JSON settings/state
 ├── formatting.py        # Discord embeds, impact styling, release summaries
-├── graphics.py          # branded 1200x675 social cards (Pillow)
+├── graphics.py          # branded 2400x1350 social cards (Pillow)
 ├── social.py            # free X (Buffer) and Bluesky posting + CLI helper
 ├── assets/fonts/        # bundled Inter variable font + OFL licence
 ├── requirements.txt

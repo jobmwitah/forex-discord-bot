@@ -1,7 +1,7 @@
 """Pipwire-branded economic-calendar cards for social posts.
 
 The cards are rendered locally with Pillow, so the numbers are always exact and
-no AI image service is involved. One 1200x675 PNG/JPEG is produced per event and
+no AI image service is involved. One 2400x1350 PNG/JPEG is produced per event and
 attached to Bluesky directly and to X through a public image URL.
 
 Design follows the Pipwire palette and type rules: light-gray post background,
@@ -25,6 +25,7 @@ from formatting import summary_result
 
 WIDTH = 1200
 HEIGHT = 675
+RENDER_SCALE = 2  # supersample the whole card, then save at 2400x1350
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_FONT_PATH = BASE_DIR / "assets" / "fonts" / "Inter-Variable.ttf"
@@ -77,12 +78,58 @@ class CardImage:
 def _font(size: int, weight: str = "Regular") -> ImageFont.FreeTypeFont:
     override = os.getenv("SOCIAL_FONT_PATH", "").strip()
     path = Path(override) if override else DEFAULT_FONT_PATH
-    font = ImageFont.truetype(str(path), size)
+    font = ImageFont.truetype(str(path), size * RENDER_SCALE)
     try:
         font.set_variation_by_name(weight)
     except (AttributeError, OSError, ValueError):
         pass
     return font
+
+
+class _ScaledDraw:
+    """Draw in 1200x675 design coordinates onto a supersampled canvas."""
+
+    def __init__(self, draw: ImageDraw.ImageDraw, scale: int) -> None:
+        self._draw = draw
+        self._scale = scale
+
+    def _point(self, xy):
+        return tuple(round(value * self._scale) for value in xy)
+
+    def _points(self, xy):
+        return [self._point(point) for point in xy]
+
+    def rectangle(self, xy, **kwargs):
+        if "width" in kwargs:
+            kwargs["width"] = max(1, round(kwargs["width"] * self._scale))
+        self._draw.rectangle(self._point(xy), **kwargs)
+
+    def rounded_rectangle(self, xy, **kwargs):
+        if "radius" in kwargs:
+            kwargs["radius"] = kwargs["radius"] * self._scale
+        if "width" in kwargs:
+            kwargs["width"] = max(1, round(kwargs["width"] * self._scale))
+        self._draw.rounded_rectangle(self._point(xy), **kwargs)
+
+    def line(self, xy, **kwargs):
+        if "width" in kwargs:
+            kwargs["width"] = max(1, round(kwargs["width"] * self._scale))
+        self._draw.line(self._points(xy), **kwargs)
+
+    def ellipse(self, xy, **kwargs):
+        if "width" in kwargs:
+            kwargs["width"] = max(1, round(kwargs["width"] * self._scale))
+        self._draw.ellipse(self._point(xy), **kwargs)
+
+    def text(self, xy, text, **kwargs):
+        self._draw.text(self._point(xy), text, **kwargs)
+
+    def textlength(self, text, **kwargs) -> float:
+        return self._draw.textlength(text, **kwargs) / self._scale
+
+    def textbbox(self, xy, text, **kwargs):
+        box = self._draw.textbbox(self._point(xy), text, **kwargs)
+        return tuple(value / self._scale for value in box)
 
 
 def _text_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont) -> float:
@@ -195,21 +242,30 @@ def _wrap(
 def _background() -> Image.Image:
     """Light-gray Pipwire canvas with a very soft teal corner wash."""
 
-    image = Image.new("RGB", (WIDTH, HEIGHT), POST_BG)
+    canvas = (WIDTH * RENDER_SCALE, HEIGHT * RENDER_SCALE)
+    image = Image.new("RGB", canvas, POST_BG)
     draw = ImageDraw.Draw(image)
     top = (235, 235, 237)
-    for y in range(HEIGHT):
-        ratio = y / (HEIGHT - 1)
+    for y in range(canvas[1]):
+        ratio = y / (canvas[1] - 1)
         colour = tuple(
             int(start + (end - start) * ratio)
             for start, end in zip(top, POST_BG)
         )
-        draw.line([(0, y), (WIDTH, y)], fill=colour)
+        draw.line([(0, y), (canvas[0], y)], fill=colour)
 
-    glow = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
+    glow = Image.new("RGBA", canvas, (0, 0, 0, 0))
     glow_draw = ImageDraw.Draw(glow)
-    glow_draw.ellipse([700, -280, 1320, 360], fill=(*TEAL_BRIGHT, 18))
-    glow = glow.filter(ImageFilter.GaussianBlur(90))
+    glow_draw.ellipse(
+        [
+            700 * RENDER_SCALE,
+            -280 * RENDER_SCALE,
+            1320 * RENDER_SCALE,
+            360 * RENDER_SCALE,
+        ],
+        fill=(*TEAL_BRIGHT, 18),
+    )
+    glow = glow.filter(ImageFilter.GaussianBlur(90 * RENDER_SCALE))
     return Image.alpha_composite(image.convert("RGBA"), glow).convert("RGB")
 
 
@@ -231,7 +287,8 @@ def _pill(
         radius=height // 2,
         fill=fill,
     )
-    text_top = top + (height - (font.getbbox(text)[3] - font.getbbox(text)[1])) // 2 - 2
+    text_box = font.getbbox(text)
+    text_top = top + (height - (text_box[3] - text_box[1]) // RENDER_SCALE) // 2 - 2
     _draw_tracked(
         draw,
         (left + padding_x, text_top),
@@ -334,7 +391,7 @@ def render_card(
     """Render one Pipwire event card and return the encoded image."""
 
     image = _background()
-    draw = ImageDraw.Draw(image)
+    draw = _ScaledDraw(ImageDraw.Draw(image), RENDER_SCALE)
 
     # Dark banner with the wordmark and the small teal brand label.
     draw.rectangle([0, 0, WIDTH, 100], fill=DARK_BANNER)
@@ -405,7 +462,7 @@ def render_card(
         eyebrow,
         eyebrow_font,
         TEAL,
-        eyebrow_font.size * LABEL_TRACKING,
+        12 * LABEL_TRACKING,
     )
 
     title_x = 200
@@ -415,7 +472,7 @@ def render_card(
     title_lines, title_font, title_tracking = _fit_title(
         draw, title, title_width, 3
     )
-    title_line_height = int(title_font.size * 1.12)
+    title_line_height = int((title_font.size / RENDER_SCALE) * 1.12)
     for offset, line in enumerate(title_lines):
         _draw_tracked(
             draw,
@@ -584,7 +641,7 @@ def render_card(
     return CardImage(
         data=data,
         mime=mime,
-        width=WIDTH,
-        height=HEIGHT,
+        width=WIDTH * RENDER_SCALE,
+        height=HEIGHT * RENDER_SCALE,
         alt=_alt_text(event, kind, minutes, tz),
     )

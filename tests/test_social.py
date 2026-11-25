@@ -373,10 +373,10 @@ class SocialManagerImageTests(unittest.TestCase):
 
 
 class GraphicsTests(unittest.TestCase):
-    def test_reminder_card_is_1200x675_and_within_bluesky_limit(self) -> None:
+    def test_reminder_card_is_2400x1350_and_within_bluesky_limit(self) -> None:
         from PIL import Image
 
-        from graphics import HEIGHT, WIDTH, render_card
+        from graphics import HEIGHT, RENDER_SCALE, WIDTH, render_card
 
         event = _event(
             "g1",
@@ -385,12 +385,13 @@ class GraphicsTests(unittest.TestCase):
         )
         card = render_card(event, "reminder", ZoneInfo("UTC"), minutes=15)
 
-        self.assertEqual((card.width, card.height), (WIDTH, HEIGHT))
-        self.assertEqual((WIDTH, HEIGHT), (1200, 675))
+        expected = (WIDTH * RENDER_SCALE, HEIGHT * RENDER_SCALE)
+        self.assertEqual((card.width, card.height), expected)
+        self.assertEqual(expected, (2400, 1350))
         self.assertEqual(card.mime, "image/png")
         self.assertLessEqual(len(card.data), 1_000_000)
         image = Image.open(BytesIO(card.data))
-        self.assertEqual(image.size, (1200, 675))
+        self.assertEqual(image.size, (2400, 1350))
         self.assertIn("AUD", card.alt)
         self.assertIn("15 minutes", card.alt)
 
